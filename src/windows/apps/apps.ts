@@ -13,6 +13,38 @@ function hashStringToNumber(str: string): number {
   return Math.abs(hash);
 }
 
+function cleanIconPath(path: string): string {
+  let s = (path || "").trim();
+  const lastComma = s.lastIndexOf(",");
+
+  if (lastComma !== -1) {
+    const right = s.slice(lastComma + 1).trim();
+
+    if (/^-?\d+$/.test(right)) {
+      s = s.slice(0, lastComma).trim();
+    }
+  }
+
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1);
+  }
+
+  return s;
+}
+
+function cleanAppName(name: string): string {
+  if (!name) return name;
+
+  // Remove common version patterns from app name
+  // "App 1.2.3", "App v1.2", "App (1.2.3)", "App - 1.2.3", etc.
+  return name
+    .replace(/\s+v?\d+(\.\d+)*(\.\d+)*$/i, "") // Remove trailing version numbers
+    .replace(/\s+\(\d+(\.\d+)*(\.\d+)*\)$/i, "") // Remove version in parentheses
+    .replace(/\s+-\s*\d+(\.\d+)*(\.\d+)*$/i, "") // Remove version after dash
+    .replace(/\s+\d{4}$/i, "") // Remove trailing year
+    .trim();
+}
+
 type RegistryApp = App & {
   registryKey: string;
 };
@@ -44,10 +76,11 @@ async function fetchRegistryApps(): Promise<App[]> {
                 const app: Partial<RegistryApp> = { registryKey };
 
                 for (const v of values || []) {
-                  if (v.name === "DisplayName") app.name = v.value;
+                  if (v.name === "QuietDisplayName") app.name = v.value; // Prefer QuietDisplayName if available
+                  if (v.name === "DisplayName" && !app.name) app.name = v.value;
                   if (v.name === "DisplayVersion") app.version = v.value;
                   if (v.name === "Publisher") app.publisher = v.value;
-                  if (v.name === "DisplayIcon") app.icon = v.value;
+                  if (v.name === "DisplayIcon") app.icon = cleanIconPath(v.value);
                   if (v.name === "Comments" || v.name === "LocalizedDescription") app.description = v.value;
                 }
 
@@ -74,7 +107,7 @@ async function fetchRegistryApps(): Promise<App[]> {
     .filter((app): app is RegistryApp => app?.name !== undefined)
     .map((app) => ({
       id: hashStringToNumber(app.registryKey),
-      name: app.name || "",
+      name: cleanAppName(app.name) || "",
       version: app.version || "",
       publisher: app.publisher || "",
       description: app.description || "",

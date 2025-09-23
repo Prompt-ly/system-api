@@ -65,6 +65,25 @@ function hashStringToNumber(str) {
   }
   return Math.abs(hash);
 }
+function cleanIconPath(path) {
+  let s = (path || "").trim();
+  const lastComma = s.lastIndexOf(",");
+  if (lastComma !== -1) {
+    const right = s.slice(lastComma + 1).trim();
+    if (/^-?\d+$/.test(right)) {
+      s = s.slice(0, lastComma).trim();
+    }
+  }
+  if (s.startsWith('"') && s.endsWith('"') || s.startsWith("'") && s.endsWith("'")) {
+    s = s.slice(1, -1);
+  }
+  return s;
+}
+function cleanAppName(name) {
+  if (!name)
+    return name;
+  return name.replace(/\s+v?\d+(\.\d+)*(\.\d+)*$/i, "").replace(/\s+\(\d+(\.\d+)*(\.\d+)*\)$/i, "").replace(/\s+-\s*\d+(\.\d+)*(\.\d+)*$/i, "").replace(/\s+\d{4}$/i, "").trim();
+}
 async function fetchRegistryApps() {
   const keys = [
     { hive: Registry.HKLM, key: "\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall" },
@@ -82,14 +101,16 @@ async function fetchRegistryApps() {
         sub.values((_err, values) => {
           const app = { registryKey };
           for (const v of values || []) {
-            if (v.name === "DisplayName")
+            if (v.name === "QuietDisplayName")
+              app.name = v.value;
+            if (v.name === "DisplayName" && !app.name)
               app.name = v.value;
             if (v.name === "DisplayVersion")
               app.version = v.value;
             if (v.name === "Publisher")
               app.publisher = v.value;
             if (v.name === "DisplayIcon")
-              app.icon = v.value;
+              app.icon = cleanIconPath(v.value);
             if (v.name === "Comments" || v.name === "LocalizedDescription")
               app.description = v.value;
           }
@@ -99,9 +120,17 @@ async function fetchRegistryApps() {
       apps.push(...items.filter((item) => item !== null && item.registryKey !== undefined));
     } catch {}
   }
-  return apps.filter((app) => app?.name !== undefined).map((app) => ({
+  const seen = new Set;
+  const uniqueApps = apps.filter((app) => {
+    if (app.name && !seen.has(app.name)) {
+      seen.add(app.name);
+      return true;
+    }
+    return false;
+  });
+  return uniqueApps.filter((app) => app?.name !== undefined).map((app) => ({
     id: hashStringToNumber(app.registryKey),
-    name: app.name || "",
+    name: cleanAppName(app.name) || "",
     version: app.version || "",
     publisher: app.publisher || "",
     description: app.description || "",
