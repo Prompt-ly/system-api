@@ -61,7 +61,16 @@ async function fetchRegistryApps(): Promise<App[]> {
     } catch {}
   }
 
-  return apps
+  const seen = new Set<string>();
+  const uniqueApps = apps.filter((app) => {
+    if (app.name && !seen.has(app.name)) {
+      seen.add(app.name);
+      return true;
+    }
+    return false;
+  });
+
+  return uniqueApps
     .filter((app): app is RegistryApp => app?.name !== undefined)
     .map((app) => ({
       id: hashStringToNumber(app.registryKey),
