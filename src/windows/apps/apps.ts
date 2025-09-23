@@ -1,125 +1,222 @@
 import type { App, AppRegistry } from "@/modules/apps";
-import { Registry } from "./registry";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 function hashStringToNumber(str: string): number {
   let hash = 0;
-
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
     hash = (hash << 5) - hash + char;
     hash = hash & hash;
   }
-
-  return Math.abs(hash);
+  const n = Math.abs(hash);
+  return n === 0 ? 1 : n;
 }
 
-function cleanIconPath(path: string): string {
+function cleanIconPath(path: string | undefined | null): string {
   let s = (path || "").trim();
   const lastComma = s.lastIndexOf(",");
-
   if (lastComma !== -1) {
     const right = s.slice(lastComma + 1).trim();
-
     if (/^-?\d+$/.test(right)) {
       s = s.slice(0, lastComma).trim();
     }
   }
-
   if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
     s = s.slice(1, -1);
   }
-
   return s;
 }
 
-function cleanAppName(name: string): string {
-  if (!name) return name;
+const ps = (script: string) =>
+  execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+    encoding: "utf8",
+    windowsHide: true,
+    maxBuffer: 1024 * 1024 * 64
+  }).trim();
 
-  // Remove common version patterns from app name
-  // "App 1.2.3", "App v1.2", "App (1.2.3)", "App - 1.2.3", etc.
-  return name
-    .replace(/\s+v?\d+(\.\d+)*(\.\d+)*$/i, "") // Remove trailing version numbers
-    .replace(/\s+\(\d+(\.\d+)*(\.\d+)*\)$/i, "") // Remove version in parentheses
-    .replace(/\s+-\s*\d+(\.\d+)*(\.\d+)*$/i, "") // Remove version after dash
-    .replace(/\s+\d{4}$/i, "") // Remove trailing year
-    .trim();
+const script = `
+$ErrorActionPreference="SilentlyContinue"
+
+function Get-IconFromLnk($p){
+  try{
+    $sh=New-Object -ComObject WScript.Shell
+    $lnk=$sh.CreateShortcut($p)
+    if([string]::IsNullOrWhiteSpace($lnk.IconLocation)){
+      return $lnk.TargetPath
+    } else {
+      return ($lnk.IconLocation -split ",")[0]
+    }
+  }catch{ return $null }
 }
 
-type RegistryApp = App & {
-  registryKey: string;
+function Get-TargetFromLnk($p){
+  try{
+    $sh=New-Object -ComObject WScript.Shell
+    $lnk=$sh.CreateShortcut($p)
+    return $lnk.TargetPath
+  }catch{ return $null }
+}
+
+function Get-Win32 {
+  $paths=@(
+    "HKLM:Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    "HKLM:Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    "HKCU:Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
+  )
+  $apps=@()
+  foreach($p in $paths){
+    if(Test-Path $p){
+      $apps += Get-ChildItem $p | ForEach-Object {
+        $i=Get-ItemProperty $_.PSPath
+        if($i.DisplayName){
+          [pscustomobject]@{
+            name=$i.DisplayName
+            version=$i.DisplayVersion
+            publisher=$i.Publisher
+            iconPath=$i.DisplayIcon
+            uninstallCmd=$i.UninstallString
+            description=$i.Comments
+            location=if($i.InstallLocation){$i.InstallLocation}else{$null}
+            source="Win32"
+          }
+        }
+      }
+    }
+  }
+  $apps
+}
+
+function Get-Appx {
+  Get-AppxPackage | ForEach-Object {
+    $m=Get-AppxPackageManifest -Package $_ -ErrorAction SilentlyContinue
+    $d=$null; $icon=$null; $pub=$_.Publisher
+    if($m){
+      $d=$m.Package.Properties.Description
+      $icons=$m.Package.Applications.Application.VisualElements
+      if($icons){
+        $logo=$icons.Square44x44Logo
+        if($logo){
+          $root=$_.InstallLocation
+          $icon=[System.IO.Path]::Combine($root,$logo)
+        }
+      }
+      if(!$d){ $d=$m.Package.Properties.DisplayName }
+      if(!$pub){ $pub=$m.Package.PublisherDisplayName }
+    }
+    [pscustomobject]@{
+      name=$_.Name
+      version=$_.Version.ToString()
+      publisher=$pub
+      iconPath=$icon
+      uninstallCmd="powershell -Command Remove-AppxPackage '"+$_.PackageFullName+"'"
+      description=$d
+      location=$_.InstallLocation
+      source="Appx"
+    }
+  }
+}
+
+function Get-StartMenu {
+  $paths=@(
+    "$Env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs",
+    "$Env:AppData\\Microsoft\\Windows\\Start Menu\\Programs",
+    "$Env:Public\\Desktop",
+    "$Env:UserProfile\\Desktop"
+  )
+  $list=@()
+  foreach($p in $paths){
+    if(Test-Path $p){
+      Get-ChildItem $p -Recurse -Include *.lnk |
+        ForEach-Object {
+          $name=$_.BaseName
+          $icon=Get-IconFromLnk $_.FullName
+          $target=Get-TargetFromLnk $_.FullName
+          [pscustomobject]@{
+            name=$name
+            version=$null
+            publisher=$null
+            iconPath=$icon
+            uninstallCmd=$null
+            description=$_.FullName
+            location=$target
+            source="StartMenu"
+          }
+        }
+    }
+  }
+  $list
+}
+
+$all = @(Get-Win32) + @(Get-Appx) + @(Get-StartMenu)
+$all | Where-Object { $_.name } | Sort-Object name -Unique |
+  ConvertTo-Json -Depth 6
+`;
+
+type PSApp = {
+  name: string;
+  version?: string;
+  publisher?: string;
+  iconPath?: string;
+  uninstallCmd?: string;
+  description?: string;
+  location?: string;
+  source: "Win32" | "Appx" | "StartMenu";
 };
 
-async function fetchRegistryApps(): Promise<App[]> {
-  const keys = [
-    { hive: Registry.HKLM, key: "\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall" },
-    { hive: Registry.HKLM, key: "\\Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall" },
-    { hive: Registry.HKCU, key: "\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall" },
-    { hive: Registry.HKCU, key: "\\Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall" }
-  ];
-
-  const apps: Array<RegistryApp> = [];
-
-  for (const k of keys) {
-    try {
-      const reg = new Registry({ hive: k.hive, key: k.key });
-      const children: Registry[] = await new Promise((resolve) =>
-        reg.keys((err: Error | null, sub?: Registry[]) => resolve(err ? [] : sub || []))
-      );
-
-      const items = await Promise.all(
-        children.map(
-          (sub) =>
-            new Promise<Partial<RegistryApp> | null>((resolve) => {
-              const registryKey = sub.key.split("\\").pop() || "";
-
-              sub.values((_err: Error | null, values?: { name: string; type: string; value: string }[]) => {
-                const app: Partial<RegistryApp> = { registryKey };
-
-                for (const v of values || []) {
-                  if (v.name === "QuietDisplayName") app.name = v.value; // Prefer QuietDisplayName if available
-                  if (v.name === "DisplayName" && !app.name) app.name = v.value;
-                  if (v.name === "DisplayVersion") app.version = v.value;
-                  if (v.name === "Publisher") app.publisher = v.value;
-                  if (v.name === "DisplayIcon") app.icon = cleanIconPath(v.value);
-                  if (v.name === "Comments" || v.name === "LocalizedDescription") app.description = v.value;
-                }
-
-                resolve(app.name ? app : null);
-              });
-            })
-        )
-      );
-
-      apps.push(...items.filter((item): item is RegistryApp => item !== null && item.registryKey !== undefined));
-    } catch {}
+function parseAppsFromPowerShell(): PSApp[] {
+  try {
+    const out = ps(script);
+    if (!out) return [];
+    const data = JSON.parse(out);
+    // Normalize to array
+    if (Array.isArray(data)) return data as PSApp[];
+    if (data && typeof data === "object") return [data as PSApp];
+    return [];
+  } catch {
+    return [];
   }
+}
 
-  const seen = new Set<string>();
-  const uniqueApps = apps.filter((app) => {
-    if (app.name && !seen.has(app.name)) {
-      seen.add(app.name);
-      return true;
-    }
-    return false;
-  });
-
-  return uniqueApps
-    .filter((app): app is RegistryApp => app?.name !== undefined)
-    .map((app) => ({
-      id: hashStringToNumber(app.registryKey),
-      name: cleanAppName(app.name) || "",
-      version: app.version || "",
-      publisher: app.publisher || "",
-      description: app.description || "",
-      icon: app.icon || null
-    }));
+export function iconToBase64(path: string): string | undefined {
+  try {
+    const buf = readFileSync(path);
+    return buf.toString("base64");
+  } catch {
+    return undefined;
+  }
 }
 
 export class WindowsAppRegistry implements AppRegistry {
   private apps: App[] = [];
 
   async fetch() {
-    this.apps = await fetchRegistryApps();
+    const raw = parseAppsFromPowerShell();
+
+    // Deduplicate
+    const seen = new Set<string>();
+    const unique = raw.filter((a) => {
+      const key = (a.name || "").trim().toLowerCase();
+      if (!key) return false;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    this.apps = unique.map((a) => {
+      const icon = cleanIconPath(a.iconPath);
+      const idSeed = `${a.source}|${a.name}|${a.version ?? ""}|${a.publisher ?? ""}|${icon}`;
+      return {
+        id: hashStringToNumber(idSeed),
+        name: a.name || "",
+        version: a.version ?? "",
+        publisher: a.publisher ?? "",
+        icon: icon || undefined,
+        location: a.location || undefined,
+        uninstaller: a.uninstallCmd || undefined,
+        installDate: undefined
+      } as App;
+    });
   }
 
   listApps(): App[] {
@@ -131,7 +228,7 @@ export class WindowsAppRegistry implements AppRegistry {
   }
 
   uninstallApp(_id: number): boolean {
-    // TODO: Implement uninstalling logic
+    // Placeholder: not implemented
     return false;
   }
 }

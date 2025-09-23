@@ -39,8 +39,11 @@ describe("WindowsAppRegistry", () => {
         expect(app).toHaveProperty("name");
         expect(app).toHaveProperty("version");
         expect(app).toHaveProperty("publisher");
-        expect(app).toHaveProperty("description");
+        // optional properties
         expect(app).toHaveProperty("icon");
+        expect(app).toHaveProperty("location");
+        expect(app).toHaveProperty("uninstaller");
+        expect(app).toHaveProperty("installDate");
 
         // Check property types
         expect(typeof app.id).toBe("number");
@@ -49,8 +52,7 @@ describe("WindowsAppRegistry", () => {
         expect(app.name.length).toBeGreaterThan(0);
         expect(typeof app.version).toBe("string");
         expect(typeof app.publisher).toBe("string");
-        expect(typeof app.description).toBe("string");
-        expect(app.icon === null || typeof app.icon === "string").toBe(true);
+        expect(app.icon === undefined || typeof app.icon === "string").toBe(true);
       });
     });
 
@@ -98,7 +100,6 @@ describe("WindowsAppRegistry", () => {
         expect(foundApp?.name).toBe(firstApp.name);
         expect(foundApp?.version).toBe(firstApp.version);
         expect(foundApp?.publisher).toBe(firstApp.publisher);
-        expect(foundApp?.description).toBe(firstApp.description);
         expect(foundApp?.icon).toBe(firstApp.icon);
       }
     });
@@ -238,13 +239,12 @@ describe("WindowsAppRegistry", () => {
         // Name should always be present and non-empty (filtering requirement)
         expect(app.name).toBeTruthy();
 
-        // Other fields can be empty strings but should be defined
+        // Other required fields can be empty strings but should be defined
         expect(app.version).toBeDefined();
         expect(app.publisher).toBeDefined();
-        expect(app.description).toBeDefined();
 
-        // Icon can be null or string
-        expect(app.icon === null || typeof app.icon === "string").toBe(true);
+        // Icon can be undefined or string in new interface
+        expect(app.icon === undefined || typeof app.icon === "string").toBe(true);
       });
     });
 
@@ -253,11 +253,7 @@ describe("WindowsAppRegistry", () => {
 
       // Find apps with special characters (common in version strings and descriptions)
       const appsWithSpecialChars = apps.filter(
-        (app) =>
-          app.name.includes("++") ||
-          app.version.includes(".") ||
-          app.description.includes("&") ||
-          app.publisher.includes("®")
+        (app) => app.name.includes("++") || app.version.includes(".") || app.publisher.includes("®")
       );
 
       // Should handle these gracefully
@@ -279,7 +275,6 @@ describe("WindowsAppRegistry", () => {
         expect(typeof app.name).toBe("string");
         expect(typeof app.version).toBe("string");
         expect(typeof app.publisher).toBe("string");
-        expect(typeof app.description).toBe("string");
       });
     });
   });

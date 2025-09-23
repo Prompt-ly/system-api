@@ -3,8 +3,10 @@ export interface App {
   name: string;
   version: string;
   publisher: string;
-  description: string;
-  icon: string | null;
+  icon?: string;
+  location?: string;
+  uninstaller?: string;
+  installDate?: Date;
 }
 
 export interface AppRegistry {
