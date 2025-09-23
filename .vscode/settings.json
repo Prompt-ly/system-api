@@ -1,0 +1,42 @@
+{
+  // Disable the default formatter, use biome instead
+  "editor.defaultFormatter": "biomejs.biome",
+  "prettier.enable": false,
+  "eslint.enable": false,
+
+  // Format on save and paste
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": true,
+
+  // Enable biome for linting and formatting
+  "editor.codeActionsOnSave": {
+    "source.organizeImports.biome": "explicit",
+    "source.fixAll.biome": "explicit"
+  },
+
+  // Disable discord integration
+  "discord.enabled": false,
+
+  // Build API when files in api folder are saved
+  "triggerTaskOnSave.tasks": {
+    "Build API on Save": ["**/api/**/*"]
+  },
+
+  // Enable biome for specific file types
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "biomejs.biome",
+    "editor.formatOnSave": true
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "biomejs.biome",
+    "editor.formatOnSave": true
+  },
+  "[javascriptreact]": {
+    "editor.defaultFormatter": "biomejs.biome",
+    "editor.formatOnSave": true
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "biomejs.biome",
+    "editor.formatOnSave": true
+  }
+}
