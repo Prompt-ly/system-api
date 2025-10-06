@@ -1,6 +1,6 @@
 import type { App, AppRegistry } from "@/modules/apps";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createAppIcon } from "./app-icon";
 
 function hashStringToNumber(str: string): number {
   let hash = 0;
@@ -98,8 +98,11 @@ function Get-Appx {
       if($icons){
         $logo=$icons.Square44x44Logo
         if($logo){
+          # Clean logo path: some manifests have duplicate paths with spaces
+          # Take only the first part before any space
+          $cleanLogo = ($logo -split ' ')[0].Trim()
           $root=$_.InstallLocation
-          $icon=[System.IO.Path]::Combine($root,$logo)
+          $icon=[System.IO.Path]::Combine($root,$cleanLogo)
         }
       }
       if($m.Package.Properties.DisplayName){ $displayName=$m.Package.Properties.DisplayName }
@@ -211,15 +214,6 @@ function parseAppsFromPowerShell(): PSApp[] {
   }
 }
 
-export function iconToBase64(path: string): string | undefined {
-  try {
-    const buf = readFileSync(path);
-    return buf.toString("base64");
-  } catch {
-    return undefined;
-  }
-}
-
 export class WindowsAppRegistry implements AppRegistry {
   private apps: App[] = [];
 
@@ -227,15 +221,15 @@ export class WindowsAppRegistry implements AppRegistry {
     const apps = parseAppsFromPowerShell();
 
     this.apps = apps.map((app) => {
-      const icon = cleanIconPath(app.iconPath);
-      const idSeed = `${app.source}|${app.name}|${app.version ?? ""}|${app.publisher ?? ""}|${icon}`;
+      const iconPath = cleanIconPath(app.iconPath);
+      const idSeed = `${app.source}|${app.name}|${app.version ?? ""}|${app.publisher ?? ""}|${iconPath}`;
 
       return {
         id: hashStringToNumber(idSeed),
         name: app.name || "",
         version: app.version ?? "",
         publisher: app.publisher ?? "",
-        icon: icon || undefined,
+        icon: iconPath ? createAppIcon(iconPath) : undefined,
         location: app.location || undefined,
         uninstaller: app.uninstallCmd || undefined,
         installDate: undefined
