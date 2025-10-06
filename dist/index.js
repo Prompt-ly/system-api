@@ -70,39 +70,34 @@ function Get-TargetFromLnk($p){
   }catch{ return $null }
 }
 
-function Get-Win32 {
-  $paths=@(
-    "HKLM:Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
-    "HKLM:Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
-    "HKCU:Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
-  )
-  $apps=@()
-  foreach($p in $paths){
-    if(Test-Path $p){
-      $apps += Get-ChildItem $p | ForEach-Object {
-        $i=Get-ItemProperty $_.PSPath
-        if($i.DisplayName){
-          [pscustomobject]@{
-            name=$i.DisplayName
-            version=$i.DisplayVersion
-            publisher=$i.Publisher
-            iconPath=$i.DisplayIcon
-            uninstallCmd=$i.UninstallString
-            description=$i.Comments
-            location=if($i.InstallLocation){$i.InstallLocation}else{$null}
-            source="Win32"
-          }
-        }
+function Get-IconFromUrl($p){
+  try{
+    $content=Get-Content $p -ErrorAction SilentlyContinue
+    foreach($line in $content){
+      if($line -match '^IconFile=(.+)$'){
+        return $matches[1]
       }
     }
-  }
-  $apps
+    return $null
+  }catch{ return $null }
+}
+
+function Get-TargetFromUrl($p){
+  try{
+    $content=Get-Content $p -ErrorAction SilentlyContinue
+    foreach($line in $content){
+      if($line -match '^URL=(.+)$'){
+        return $matches[1]
+      }
+    }
+    return $null
+  }catch{ return $null }
 }
 
 function Get-Appx {
   Get-AppxPackage | ForEach-Object {
     $m=Get-AppxPackageManifest -Package $_ -ErrorAction SilentlyContinue
-    $d=$null; $icon=$null; $pub=$_.Publisher
+    $d=$null; $icon=$null; $pub=$_.Publisher; $displayName=$_.Name
     if($m){
       $d=$m.Package.Properties.Description
       $icons=$m.Package.Applications.Application.VisualElements
@@ -113,11 +108,16 @@ function Get-Appx {
           $icon=[System.IO.Path]::Combine($root,$logo)
         }
       }
-      if(!$d){ $d=$m.Package.Properties.DisplayName }
-      if(!$pub){ $pub=$m.Package.PublisherDisplayName }
+      if($m.Package.Properties.DisplayName){ $displayName=$m.Package.Properties.DisplayName }
+      if(!$d){ $d=$m.Package.Properties.Description }
+      if($m.Package.PublisherDisplayName){ 
+        $pub=$m.Package.PublisherDisplayName 
+      } elseif($pub -match 'CN=([^,]+)') {
+        $pub=$matches[1]
+      }
     }
     [pscustomobject]@{
-      name=$_.Name
+      name=$displayName
       version=$_.Version.ToString()
       publisher=$pub
       iconPath=$icon
@@ -133,26 +133,50 @@ function Get-StartMenu {
   $paths=@(
     "$Env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs",
     "$Env:AppData\\Microsoft\\Windows\\Start Menu\\Programs",
+    "$Env:ALLUSERSPROFILE\\Microsoft\\Windows\\Start Menu\\Programs",
+    "$Env:USERPROFILE\\Start Menu\\Programs",
     "$Env:Public\\Desktop",
     "$Env:UserProfile\\Desktop"
   )
   $list=@()
   foreach($p in $paths){
     if(Test-Path $p){
-      Get-ChildItem $p -Recurse -Include *.lnk |
+      # Get .lnk files
+      Get-ChildItem $p -Recurse -Include *.lnk -ErrorAction SilentlyContinue |
         ForEach-Object {
           $name=$_.BaseName
           $icon=Get-IconFromLnk $_.FullName
           $target=Get-TargetFromLnk $_.FullName
-          [pscustomobject]@{
-            name=$name
-            version=$null
-            publisher=$null
-            iconPath=$icon
-            uninstallCmd=$null
-            description=$_.FullName
-            location=$target
-            source="StartMenu"
+          if($target){
+            [pscustomobject]@{
+              name=$name
+              version=$null
+              publisher=$null
+              iconPath=$icon
+              uninstallCmd=$null
+              description=$_.FullName
+              location=$target
+              source="StartMenu"
+            }
+          }
+        }
+      # Get .url files (Steam and other internet shortcuts)
+      Get-ChildItem $p -Recurse -Include *.url -ErrorAction SilentlyContinue |
+        ForEach-Object {
+          $name=$_.BaseName
+          $icon=Get-IconFromUrl $_.FullName
+          $target=Get-TargetFromUrl $_.FullName
+          if($target){
+            [pscustomobject]@{
+              name=$name
+              version=$null
+              publisher=$null
+              iconPath=$icon
+              uninstallCmd=$null
+              description=$_.FullName
+              location=$target
+              source="StartMenu"
+            }
           }
         }
     }
@@ -160,7 +184,7 @@ function Get-StartMenu {
   $list
 }
 
-$all = @(Get-Win32) + @(Get-Appx) + @(Get-StartMenu)
+$all = @(Get-Appx) + @(Get-StartMenu)
 $all | Where-Object { $_.name } | Sort-Object name -Unique |
   ConvertTo-Json -Depth 6
 `;
@@ -182,28 +206,18 @@ function parseAppsFromPowerShell() {
 class WindowsAppRegistry {
   apps = [];
   async fetch() {
-    const raw = parseAppsFromPowerShell();
-    const seen = new Set;
-    const unique = raw.filter((a) => {
-      const key = (a.name || "").trim().toLowerCase();
-      if (!key)
-        return false;
-      if (seen.has(key))
-        return false;
-      seen.add(key);
-      return true;
-    });
-    this.apps = unique.map((a) => {
-      const icon = cleanIconPath(a.iconPath);
-      const idSeed = `${a.source}|${a.name}|${a.version ?? ""}|${a.publisher ?? ""}|${icon}`;
+    const apps = parseAppsFromPowerShell();
+    this.apps = apps.map((app) => {
+      const icon = cleanIconPath(app.iconPath);
+      const idSeed = `${app.source}|${app.name}|${app.version ?? ""}|${app.publisher ?? ""}|${icon}`;
       return {
         id: hashStringToNumber(idSeed),
-        name: a.name || "",
-        version: a.version ?? "",
-        publisher: a.publisher ?? "",
+        name: app.name || "",
+        version: app.version ?? "",
+        publisher: app.publisher ?? "",
         icon: icon || undefined,
-        location: a.location || undefined,
-        uninstaller: a.uninstallCmd || undefined,
+        location: app.location || undefined,
+        uninstaller: app.uninstallCmd || undefined,
         installDate: undefined
       };
     });
