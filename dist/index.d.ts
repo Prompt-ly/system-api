@@ -5,11 +5,15 @@ export interface App {
 	name: string;
 	version: string;
 	publisher: string;
-	icon?: string;
+	icon?: AppIcon;
 	location?: string;
 	uninstaller?: string;
 	installDate?: Date;
 }
+export type AppIcon = {
+	path: string;
+	getBase64: () => Promise<string>;
+};
 export interface AppRegistry {
 	fetch(): Promise<void>;
 	listApps(): App[];
@@ -28,11 +32,12 @@ export interface ProcessManager {
 	getProcess(id: number): Process | null;
 	listProcesses(): Process[];
 }
+declare function createAppIcon(path: string): AppIcon;
 declare const Process$1: ProcessManager;
 declare const Apps: AppRegistry;
 
 declare namespace Windows {
-	export { Apps, Process$1 as Process };
+	export { Apps, Process$1 as Process, createAppIcon };
 }
 
 export {
