@@ -32,7 +32,7 @@ export interface ProcessManager {
 	getProcess(id: number): Process | null;
 	listProcesses(): Process[];
 }
-declare function createAppIcon(path: string): AppIcon;
+declare function createAppIcon(path: string, preloadedBase64?: string | null): AppIcon;
 declare const Process$1: ProcessManager;
 declare const Apps: AppRegistry;
 

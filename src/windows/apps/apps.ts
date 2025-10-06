@@ -2,37 +2,16 @@ import type { App, AppRegistry } from "@/modules/apps";
 import { execFileSync } from "node:child_process";
 import { createAppIcon } from "./app-icon";
 
-function hashStringToNumber(str: string): number {
-  let hash = 0;
+const hashStringToNumber = (value: string): number =>
+  Math.abs([...value].reduce((acc, ch) => ((acc << 5) - acc + ch.charCodeAt(0)) | 0, 0)) || 1;
 
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash = hash & hash;
-  }
-
-  const n = Math.abs(hash);
-  return n === 0 ? 1 : n;
-}
-
-function cleanIconPath(path: string | undefined | null): string {
-  let s = (path || "").trim();
-  const lastComma = s.lastIndexOf(",");
-
-  if (lastComma !== -1) {
-    const right = s.slice(lastComma + 1).trim();
-
-    if (/^-?\d+$/.test(right)) {
-      s = s.slice(0, lastComma).trim();
-    }
-  }
-
-  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-    s = s.slice(1, -1);
-  }
-
-  return s;
-}
+const cleanIconPath = (path?: string | null) => {
+  const raw = typeof path === "string" ? path : path == null ? "" : String(path);
+  return raw
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/,\s*-?\d+$/, "");
+};
 
 const ps = (script: string) =>
   execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
@@ -41,149 +20,111 @@ const ps = (script: string) =>
     maxBuffer: 1024 * 1024 * 64
   }).trim();
 
-const script = `
+const buildScript = () => String.raw`
 $ErrorActionPreference="SilentlyContinue"
 
-function Get-IconFromLnk($p){
+function ReadLnk($p){
   try{
     $sh=New-Object -ComObject WScript.Shell
     $lnk=$sh.CreateShortcut($p)
-    if([string]::IsNullOrWhiteSpace($lnk.IconLocation)){
-      return $lnk.TargetPath
-    } else {
-      return ($lnk.IconLocation -split ",")[0]
-    }
-  }catch{ return $null }
+    $iconLoc=$lnk.IconLocation
+    $icon=if($iconLoc){$iconLoc}else{$null}
+    @{ Icon=$icon; Target=$lnk.TargetPath }
+  }catch{ @{ Icon=$null; Target=$null } }
 }
 
-function Get-TargetFromLnk($p){
+function ReadUrl($p){
   try{
-    $sh=New-Object -ComObject WScript.Shell
-    $lnk=$sh.CreateShortcut($p)
-    return $lnk.TargetPath
-  }catch{ return $null }
+    $lines=Get-Content $p -ErrorAction Stop
+    $icon=($lines | Where-Object { $_ -like "IconFile=*" } | Select-Object -First 1) -replace "IconFile=",""
+    $target=($lines | Where-Object { $_ -like "URL=*" } | Select-Object -First 1) -replace "URL=",""
+    @{ Icon=$icon; Target=$target }
+  }catch{ @{ Icon=$null; Target=$null } }
 }
 
-function Get-IconFromUrl($p){
-  try{
-    $content=Get-Content $p -ErrorAction SilentlyContinue
-    foreach($line in $content){
-      if($line -match '^IconFile=(.+)$'){
-        return $matches[1]
-      }
-    }
-    return $null
-  }catch{ return $null }
-}
-
-function Get-TargetFromUrl($p){
-  try{
-    $content=Get-Content $p -ErrorAction SilentlyContinue
-    foreach($line in $content){
-      if($line -match '^URL=(.+)$'){
-        return $matches[1]
-      }
-    }
-    return $null
-  }catch{ return $null }
-}
-
-function Get-Appx {
+function Appx(){
   Get-AppxPackage | ForEach-Object {
-    $m=Get-AppxPackageManifest -Package $_ -ErrorAction SilentlyContinue
-    $d=$null; $icon=$null; $pub=$_.Publisher; $displayName=$_.Name
-    if($m){
-      $d=$m.Package.Properties.Description
-      $icons=$m.Package.Applications.Application.VisualElements
-      if($icons){
-        $logo=$icons.Square44x44Logo
-        if($logo){
-          # Clean logo path: some manifests have duplicate paths with spaces
-          # Take only the first part before any space
-          $cleanLogo = ($logo -split ' ')[0].Trim()
-          $root=$_.InstallLocation
-          $icon=[System.IO.Path]::Combine($root,$cleanLogo)
+    $manifest=$null
+    try{ $manifest=Get-AppxPackageManifest -Package $_ -ErrorAction Stop }catch{}
+    $logo=$null
+    if($manifest){
+      $logos=@(
+        $manifest.Package.Applications.Application.VisualElements.Square44x44Logo,
+        $manifest.Package.Applications.Application.VisualElements.Square150x150Logo,
+        $manifest.Package.Applications.Application.VisualElements.Square71x71Logo,
+        $manifest.Package.Applications.Application.VisualElements.Square30x30Logo
+      ) | Where-Object { $_ -and $_ -ne "" }
+      if($logos){
+        foreach($l in $logos){
+          $relativePath=($l -split " ")[0]
+          if($relativePath){
+            $testPath=Join-Path $_.InstallLocation $relativePath
+            if($testPath -and (Test-Path $testPath -ErrorAction SilentlyContinue)){
+              $logo=$testPath
+              break
+            }
+          }
+        }
+        # Fallback: use first logo even if file doesn't exist (icon resolver will handle variants)
+        if(-not $logo -and $logos[0]){
+          $relativePath=($logos[0] -split " ")[0]
+          if($relativePath){
+            $logo=Join-Path $_.InstallLocation $relativePath
+          }
         }
       }
-      if($m.Package.Properties.DisplayName){ $displayName=$m.Package.Properties.DisplayName }
-      if(!$d){ $d=$m.Package.Properties.Description }
-      if($m.Package.PublisherDisplayName){ 
-        $pub=$m.Package.PublisherDisplayName 
-      } elseif($pub -match 'CN=([^,]+)') {
-        $pub=$matches[1]
-      }
     }
+    $publisher=$_.Publisher
+    if($manifest -and $manifest.Package.PublisherDisplayName){ $publisher=$manifest.Package.PublisherDisplayName }
+    $name=$_.Name
+    if($manifest -and $manifest.Package.Properties.DisplayName){ $name=$manifest.Package.Properties.DisplayName }
     [pscustomobject]@{
-      name=$displayName
+      name=$name
       version=$_.Version.ToString()
-      publisher=$pub
-      iconPath=$icon
+      publisher=$publisher
+      iconPath=$logo
       uninstallCmd="powershell -Command Remove-AppxPackage '"+$_.PackageFullName+"'"
-      description=$d
+      description=if($manifest){$manifest.Package.Properties.Description}else{$null}
       location=$_.InstallLocation
       source="Appx"
     }
   }
 }
 
-function Get-StartMenu {
-  $paths=@(
+function StartMenu(){
+  $roots=@(
     "$Env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs",
     "$Env:AppData\\Microsoft\\Windows\\Start Menu\\Programs",
     "$Env:ALLUSERSPROFILE\\Microsoft\\Windows\\Start Menu\\Programs",
     "$Env:USERPROFILE\\Start Menu\\Programs",
     "$Env:Public\\Desktop",
     "$Env:UserProfile\\Desktop"
-  )
-  $list=@()
-  foreach($p in $paths){
-    if(Test-Path $p){
-      # Get .lnk files
-      Get-ChildItem $p -Recurse -Include *.lnk -ErrorAction SilentlyContinue |
-        ForEach-Object {
-          $name=$_.BaseName
-          $icon=Get-IconFromLnk $_.FullName
-          $target=Get-TargetFromLnk $_.FullName
-          if($target){
-            [pscustomobject]@{
-              name=$name
-              version=$null
-              publisher=$null
-              iconPath=$icon
-              uninstallCmd=$null
-              description=$_.FullName
-              location=$target
-              source="StartMenu"
-            }
-          }
+  ) | Where-Object { Test-Path $_ }
+
+  foreach($root in $roots){
+    Get-ChildItem $root -Recurse -Include *.lnk,*.url -ErrorAction SilentlyContinue | ForEach-Object {
+      $info = if($_.Extension -ieq ".lnk"){ ReadLnk $_.FullName } elseif($_.Extension -ieq ".url"){ ReadUrl $_.FullName } else { $null }
+      if($info -and $info.Target){
+        $icon=$info.Icon
+        if([string]::IsNullOrWhiteSpace($icon)){ $icon=$info.Target }
+        if($icon){ $icon=[System.Environment]::ExpandEnvironmentVariables($icon) }
+        [pscustomobject]@{
+          name=$_.BaseName
+          version=$null
+          publisher=$null
+          iconPath=$icon
+          uninstallCmd=$null
+          description=$_.FullName
+          location=$info.Target
+          source="StartMenu"
         }
-      # Get .url files (Steam and other internet shortcuts)
-      Get-ChildItem $p -Recurse -Include *.url -ErrorAction SilentlyContinue |
-        ForEach-Object {
-          $name=$_.BaseName
-          $icon=Get-IconFromUrl $_.FullName
-          $target=Get-TargetFromUrl $_.FullName
-          if($target){
-            [pscustomobject]@{
-              name=$name
-              version=$null
-              publisher=$null
-              iconPath=$icon
-              uninstallCmd=$null
-              description=$_.FullName
-              location=$target
-              source="StartMenu"
-            }
-          }
-        }
+      }
     }
   }
-  $list
 }
 
-$all = @(Get-Appx) + @(Get-StartMenu)
-$all | Where-Object { $_.name } | Sort-Object name -Unique |
-  ConvertTo-Json -Depth 6
+$result = @(Appx) + @(StartMenu)
+$result | Where-Object { $_.name } | Sort-Object name -Unique | ConvertTo-Json -Depth 6
 `;
 
 type PSApp = {
@@ -197,22 +138,16 @@ type PSApp = {
   source: "Appx" | "StartMenu";
 };
 
-function parseAppsFromPowerShell(): PSApp[] {
+const parseAppsFromPowerShell = (): PSApp[] => {
   try {
-    const out = ps(script);
-    if (!out) return [];
-
-    const data = JSON.parse(out);
-
-    // Normalise to array
-    if (Array.isArray(data)) return data as PSApp[];
-    if (data && typeof data === "object") return [data as PSApp];
-
-    return [];
+    const raw = ps(buildScript());
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as PSApp[]) : parsed ? [parsed as PSApp] : [];
   } catch {
     return [];
   }
-}
+};
 
 export class WindowsAppRegistry implements AppRegistry {
   private apps: App[] = [];
@@ -221,8 +156,8 @@ export class WindowsAppRegistry implements AppRegistry {
     const apps = parseAppsFromPowerShell();
 
     this.apps = apps.map((app) => {
-      const iconPath = cleanIconPath(app.iconPath);
-      const idSeed = `${app.source}|${app.name}|${app.version ?? ""}|${app.publisher ?? ""}|${iconPath}`;
+      const iconPath = cleanIconPath(app.iconPath) || undefined;
+      const idSeed = `${app.source}|${app.name}|${app.version ?? ""}|${app.publisher ?? ""}|${iconPath ?? ""}`;
 
       return {
         id: hashStringToNumber(idSeed),

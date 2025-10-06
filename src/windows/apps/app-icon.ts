@@ -4,8 +4,8 @@ import { extractIconAsBase64 } from "./icon-extractor";
 /**
  * Create an AppIcon object with lazy loading and caching
  */
-export function createAppIcon(path: string): IAppIcon {
-  let cachedBase64: string | null = null;
+export function createAppIcon(path: string, preloadedBase64?: string | null): IAppIcon {
+  let cachedBase64: string | null = preloadedBase64 ?? null;
   let loadPromise: Promise<string> | null = null;
 
   return {
@@ -24,6 +24,9 @@ export function createAppIcon(path: string): IAppIcon {
       // Start loading
       loadPromise = (async () => {
         try {
+          if (cachedBase64 !== null) {
+            return cachedBase64;
+          }
           const base64 = extractIconAsBase64(path);
           cachedBase64 = base64 ?? "";
           return cachedBase64;
