@@ -18,7 +18,8 @@ __export(exports_windows, {
 });
 
 // src/windows/apps/apps.ts
-import { execFileSync } from "node:child_process";
+import { execFile as execFile2 } from "node:child_process";
+import { promisify as promisify2 } from "node:util";
 
 // src/windows/apps/icon-extractor.ts
 import { execFile } from "node:child_process";
@@ -384,16 +385,20 @@ function createAppIcon(path, preloadedBase64) {
 }
 
 // src/windows/apps/apps.ts
+var execFileAsync2 = promisify2(execFile2);
 var hashStringToNumber = (value) => Math.abs([...value].reduce((acc, ch) => (acc << 5) - acc + ch.charCodeAt(0) | 0, 0)) || 1;
 var cleanIconPath = (path) => {
   const raw = typeof path === "string" ? path : path == null ? "" : String(path);
   return raw.trim().replace(/^['"]|['"]$/g, "").replace(/,\s*-?\d+$/, "");
 };
-var ps = (script) => execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
-  encoding: "utf8",
-  windowsHide: true,
-  maxBuffer: 1024 * 1024 * 64
-}).trim();
+var ps = async (script) => {
+  const { stdout } = await execFileAsync2("powershell.exe", ["-NoProfile", "-Command", script], {
+    encoding: "utf8",
+    windowsHide: true,
+    maxBuffer: 1024 * 1024 * 64
+  });
+  return stdout.trim();
+};
 var buildScript = () => String.raw`
 $ErrorActionPreference="SilentlyContinue"
 
@@ -500,9 +505,9 @@ function StartMenu(){
 $result = @(Appx) + @(StartMenu)
 $result | Where-Object { $_.name } | Sort-Object name -Unique | ConvertTo-Json -Depth 6
 `;
-var parseAppsFromPowerShell = () => {
+var parseAppsFromPowerShell = async () => {
   try {
-    const raw = ps(buildScript());
+    const raw = await ps(buildScript());
     if (!raw)
       return [];
     const parsed = JSON.parse(raw);
@@ -515,8 +520,12 @@ var parseAppsFromPowerShell = () => {
 class WindowsAppRegistry {
   apps = [];
   async fetch() {
-    const apps = parseAppsFromPowerShell();
-    this.apps = apps.map((app) => {
+    const apps = await parseAppsFromPowerShell();
+    this.apps = apps.filter((app) => {
+      const hasResourceName = app.name?.startsWith("ms-resource:");
+      const hasResourceIcon = app.iconPath?.startsWith("ms-resource:");
+      return !hasResourceName && !hasResourceIcon;
+    }).map((app) => {
       const iconPath = cleanIconPath(app.iconPath) || undefined;
       const idSeed = `${app.source}|${app.name}|${app.version ?? ""}|${app.publisher ?? ""}|${iconPath ?? ""}`;
       return {

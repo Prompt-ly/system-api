@@ -1,6 +1,9 @@
 import { Windows } from "../index";
 
+console.log("Fetching installed apps...");
 await Windows.Apps.fetch();
+console.log(`Found ${Windows.Apps.listApps().length} apps`);
+
 Windows.Apps.listApps().forEach((app) => {
   // if (app.name.toLowerCase().includes("notion")) {
   //   console.log(app);
