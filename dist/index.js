@@ -18,12 +18,15 @@ __export(exports_windows, {
 });
 
 // src/windows/apps/apps.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 // src/windows/apps/icon-extractor.ts
-import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
+import { promisify } from "node:util";
+var execFileAsync = promisify(execFile);
 function getMimeType(ext) {
   const mimeTypes = {
     ".png": "image/png",
@@ -37,7 +40,7 @@ function getMimeType(ext) {
   };
   return mimeTypes[ext.toLowerCase()] || "image/png";
 }
-function resolveAppxIconPathWithPowerShell(iconPath) {
+async function resolveAppxIconPathWithPowerShell(iconPath) {
   try {
     const dir = dirname(iconPath);
     const baseNameWithoutExt = basename(iconPath, extname(iconPath));
@@ -107,19 +110,20 @@ try {
 
 exit 1
 `.trim();
-    const result = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 1024 * 1024
-    }).trim();
+    });
+    const result = stdout.trim();
     return result || null;
   } catch {
     return null;
   }
 }
-function resolveAppxIconPath(iconPath) {
+async function resolveAppxIconPath(iconPath) {
   if (iconPath.includes("WindowsApps")) {
-    return resolveAppxIconPathWithPowerShell(iconPath);
+    return await resolveAppxIconPathWithPowerShell(iconPath);
   }
   try {
     if (existsSync(iconPath)) {
@@ -185,7 +189,7 @@ function resolveAppxIconPath(iconPath) {
     return null;
   }
 }
-function extractIconWithPowerShell(filePath) {
+async function extractIconWithPowerShell(filePath) {
   try {
     const ext = extname(filePath).toLowerCase();
     if (ext === ".ico") {
@@ -263,11 +267,12 @@ public class Shell32 {
 
 Get-IconFromFile -Path "${filePath.replace(/\\/g, "\\\\")}"
 `.trim();
-    const result = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 1024 * 1024 * 10
-    }).trim();
+    });
+    const result = stdout.trim();
     if (result) {
       return `data:image/x-icon;base64,${result}`;
     }
@@ -276,15 +281,15 @@ Get-IconFromFile -Path "${filePath.replace(/\\/g, "\\\\")}"
     return null;
   }
 }
-function fileToBase64DataURI(filePath) {
+async function fileToBase64DataURI(filePath) {
   try {
-    const resolvedPath = resolveAppxIconPath(filePath);
+    const resolvedPath = await resolveAppxIconPath(filePath);
     if (!resolvedPath)
       return null;
     if (filePath.includes("WindowsApps") || resolvedPath.includes("WindowsApps")) {
-      return fileToBase64DataURIWithPowerShell(resolvedPath);
+      return await fileToBase64DataURIWithPowerShell(resolvedPath);
     }
-    const buffer = readFileSync(resolvedPath);
+    const buffer = await readFile(resolvedPath);
     const ext = extname(resolvedPath);
     const mimeType = getMimeType(ext);
     const base64 = buffer.toString("base64");
@@ -293,7 +298,7 @@ function fileToBase64DataURI(filePath) {
     return null;
   }
 }
-function fileToBase64DataURIWithPowerShell(filePath) {
+async function fileToBase64DataURIWithPowerShell(filePath) {
   try {
     const ext = extname(filePath);
     const mimeType = getMimeType(ext);
@@ -307,11 +312,12 @@ function fileToBase64DataURIWithPowerShell(filePath) {
       exit 1
     }
     `.trim();
-    const result = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 1024 * 1024 * 10
-    }).trim();
+    });
+    const result = stdout.trim();
     if (result) {
       return `data:${mimeType};base64,${result}`;
     }
@@ -320,7 +326,7 @@ function fileToBase64DataURIWithPowerShell(filePath) {
     return null;
   }
 }
-function extractIconAsBase64(filePath) {
+async function extractIconAsBase64(filePath) {
   if (!filePath || !filePath.trim()) {
     return null;
   }
@@ -332,16 +338,16 @@ function extractIconAsBase64(filePath) {
   const ext = extname(cleanPath).toLowerCase();
   const imageExtensions = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".svg"];
   if (imageExtensions.includes(ext)) {
-    return fileToBase64DataURI(cleanPath);
+    return await fileToBase64DataURI(cleanPath);
   }
   if (ext === ".ico") {
-    return fileToBase64DataURI(cleanPath);
+    return await fileToBase64DataURI(cleanPath);
   }
   const executableExtensions = [".exe", ".dll", ".cpl", ".ocx", ".scr"];
   if (executableExtensions.includes(ext)) {
-    return extractIconWithPowerShell(cleanPath);
+    return await extractIconWithPowerShell(cleanPath);
   }
-  return extractIconWithPowerShell(cleanPath);
+  return await extractIconWithPowerShell(cleanPath);
 }
 
 // src/windows/apps/app-icon.ts
@@ -351,15 +357,19 @@ function createAppIcon(path, preloadedBase64) {
   return {
     path,
     getBase64: async () => {
-      if (cachedBase64 !== null)
+      if (cachedBase64 !== null) {
         return cachedBase64;
-      if (loadPromise)
+      }
+      if (loadPromise) {
         return loadPromise;
+      }
       loadPromise = (async () => {
         try {
-          if (cachedBase64 !== null)
+          if (cachedBase64 !== null) {
             return cachedBase64;
-          cachedBase64 = extractIconAsBase64(path) ?? "";
+          }
+          const base64 = await extractIconAsBase64(path);
+          cachedBase64 = base64 ?? "";
           return cachedBase64;
         } catch {
           cachedBase64 = "";
@@ -379,7 +389,7 @@ var cleanIconPath = (path) => {
   const raw = typeof path === "string" ? path : path == null ? "" : String(path);
   return raw.trim().replace(/^['"]|['"]$/g, "").replace(/,\s*-?\d+$/, "");
 };
-var ps = (script) => execFileSync2("powershell.exe", ["-NoProfile", "-Command", script], {
+var ps = (script) => execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
   encoding: "utf8",
   windowsHide: true,
   maxBuffer: 1024 * 1024 * 64

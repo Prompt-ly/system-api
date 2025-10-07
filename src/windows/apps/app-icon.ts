@@ -27,7 +27,7 @@ export function createAppIcon(path: string, preloadedBase64?: string | null): IA
           if (cachedBase64 !== null) {
             return cachedBase64;
           }
-          const base64 = extractIconAsBase64(path);
+          const base64 = await extractIconAsBase64(path);
           cachedBase64 = base64 ?? "";
           return cachedBase64;
         } catch {

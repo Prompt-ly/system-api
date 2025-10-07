@@ -1,6 +1,10 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Detect MIME type from file extension
@@ -22,7 +26,7 @@ function getMimeType(ext: string): string {
 /**
  * Resolve Appx icon path using PowerShell (handle permission issues)
  */
-function resolveAppxIconPathWithPowerShell(iconPath: string): string | null {
+async function resolveAppxIconPathWithPowerShell(iconPath: string): Promise<string | null> {
   try {
     const dir = dirname(iconPath);
     const baseNameWithoutExt = basename(iconPath, extname(iconPath));
@@ -94,12 +98,13 @@ try {
 exit 1
 `.trim();
 
-    const result = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 1024 * 1024
-    }).trim();
+    });
 
+    const result = stdout.trim();
     return result || null;
   } catch {
     return null;
@@ -109,10 +114,10 @@ exit 1
 /**
  * Resolve Appx icon path (handle scale variants like Square44x44Logo.scale-100.png)
  */
-function resolveAppxIconPath(iconPath: string): string | null {
+async function resolveAppxIconPath(iconPath: string): Promise<string | null> {
   // For WindowsApps paths, use PowerShell to avoid permission issues
   if (iconPath.includes("WindowsApps")) {
-    return resolveAppxIconPathWithPowerShell(iconPath);
+    return await resolveAppxIconPathWithPowerShell(iconPath);
   }
 
   try {
@@ -207,7 +212,7 @@ function resolveAppxIconPath(iconPath: string): string | null {
  * Returns base64 string (without data URI prefix) that will be converted later
  * Supports: .exe, .dll, .ico, and file extension associations
  */
-function extractIconWithPowerShell(filePath: string): string | null {
+async function extractIconWithPowerShell(filePath: string): Promise<string | null> {
   try {
     const ext = extname(filePath).toLowerCase();
 
@@ -290,11 +295,13 @@ public class Shell32 {
 Get-IconFromFile -Path "${filePath.replace(/\\/g, "\\\\")}"
 `.trim();
 
-    const result = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 1024 * 1024 * 10
-    }).trim();
+    });
+
+    const result = stdout.trim();
 
     // PowerShell returns base64 for .ico format, add data URI prefix
     if (result) {
@@ -312,18 +319,18 @@ Get-IconFromFile -Path "${filePath.replace(/\\/g, "\\\\")}"
  * Used for direct file reading (like .ico, .png, etc.)
  * For WindowsApps files, falls back to PowerShell if direct read fails
  */
-function fileToBase64DataURI(filePath: string): string | null {
+async function fileToBase64DataURI(filePath: string): Promise<string | null> {
   try {
     // Try to resolve Appx icon path variants
-    const resolvedPath = resolveAppxIconPath(filePath);
+    const resolvedPath = await resolveAppxIconPath(filePath);
     if (!resolvedPath) return null;
 
     // For WindowsApps paths, use PowerShell directly (permission issues)
     if (filePath.includes("WindowsApps") || resolvedPath.includes("WindowsApps")) {
-      return fileToBase64DataURIWithPowerShell(resolvedPath);
+      return await fileToBase64DataURIWithPowerShell(resolvedPath);
     }
 
-    const buffer = readFileSync(resolvedPath);
+    const buffer = await readFile(resolvedPath);
     const ext = extname(resolvedPath);
     const mimeType = getMimeType(ext);
     const base64 = buffer.toString("base64");
@@ -337,7 +344,7 @@ function fileToBase64DataURI(filePath: string): string | null {
 /**
  * Read file using PowerShell (can access WindowsApps folder)
  */
-function fileToBase64DataURIWithPowerShell(filePath: string): string | null {
+async function fileToBase64DataURIWithPowerShell(filePath: string): Promise<string | null> {
   try {
     const ext = extname(filePath);
     const mimeType = getMimeType(ext);
@@ -355,11 +362,13 @@ function fileToBase64DataURIWithPowerShell(filePath: string): string | null {
     }
     `.trim();
 
-    const result = execFileSync("powershell.exe", ["-NoProfile", "-Command", script], {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 1024 * 1024 * 10
-    }).trim();
+    });
+
+    const result = stdout.trim();
 
     if (result) {
       return `data:${mimeType};base64,${result}`;
@@ -375,7 +384,7 @@ function fileToBase64DataURIWithPowerShell(filePath: string): string | null {
  * Main icon extraction function
  * Handles different file types and extraction methods
  */
-export function extractIconAsBase64(filePath: string | undefined | null): string | null {
+export async function extractIconAsBase64(filePath: string | undefined | null): Promise<string | null> {
   if (!filePath || !filePath.trim()) {
     return null;
   }
@@ -394,20 +403,20 @@ export function extractIconAsBase64(filePath: string | undefined | null): string
   // For image files, read directly (or resolve and read for Appx)
   const imageExtensions = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".svg"];
   if (imageExtensions.includes(ext)) {
-    return fileToBase64DataURI(cleanPath);
+    return await fileToBase64DataURI(cleanPath);
   }
 
   // For .ico files, read directly
   if (ext === ".ico") {
-    return fileToBase64DataURI(cleanPath);
+    return await fileToBase64DataURI(cleanPath);
   }
 
   // For executables, DLLs, and other files, use PowerShell extraction
   const executableExtensions = [".exe", ".dll", ".cpl", ".ocx", ".scr"];
   if (executableExtensions.includes(ext)) {
-    return extractIconWithPowerShell(cleanPath);
+    return await extractIconWithPowerShell(cleanPath);
   }
 
   // For other files, try to get the file type icon using PowerShell
-  return extractIconWithPowerShell(cleanPath);
+  return await extractIconWithPowerShell(cleanPath);
 }
