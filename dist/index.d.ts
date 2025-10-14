@@ -32,12 +32,11 @@ export interface ProcessManager {
 	getProcess(id: number): Process | null;
 	listProcesses(): Process[];
 }
-declare function createAppIcon(path: string, preloadedBase64?: string | null): AppIcon;
 declare const Process$1: ProcessManager;
 declare const Apps: AppRegistry;
 
 declare namespace Windows {
-	export { Apps, Process$1 as Process, createAppIcon };
+	export { Apps, Process$1 as Process };
 }
 
 export {

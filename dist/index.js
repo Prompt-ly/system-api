@@ -12,119 +12,248 @@ var __export = (target, all) => {
 // src/windows/windows.ts
 var exports_windows = {};
 __export(exports_windows, {
-  createAppIcon: () => createAppIcon,
   Process: () => Process,
   Apps: () => Apps
 });
 
 // src/windows/apps/apps.ts
-import { execFile as execFile2 } from "node:child_process";
-import { promisify as promisify2 } from "node:util";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 // src/windows/apps/icon-extractor.ts
-import { execFile } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
-import { promisify } from "node:util";
-var execFileAsync = promisify(execFile);
-function getMimeType(ext) {
-  const mimeTypes = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".bmp": "image/bmp",
-    ".webp": "image/webp",
-    ".svg": "image/svg+xml",
-    ".ico": "image/x-icon"
-  };
-  return mimeTypes[ext.toLowerCase()] || "image/png";
-}
-async function resolveAppxIconPathWithPowerShell(iconPath) {
+import koffi2 from "koffi";
+
+// src/windows/apps/koffi-defs.ts
+import koffi from "koffi";
+var shell32 = koffi.load("shell32.dll");
+var user32 = koffi.load("user32.dll");
+var gdi32 = koffi.load("gdi32.dll");
+var SHFILEINFOW = koffi.struct("SHFILEINFOW", {
+  hIcon: "void*",
+  iIcon: "int",
+  dwAttributes: "uint32",
+  szDisplayName: koffi.array("uint16", 260),
+  szTypeName: koffi.array("uint16", 80)
+});
+var BITMAPINFOHEADER = koffi.struct("BITMAPINFOHEADER", {
+  biSize: "uint32",
+  biWidth: "int32",
+  biHeight: "int32",
+  biPlanes: "uint16",
+  biBitCount: "uint16",
+  biCompression: "uint32",
+  biSizeImage: "uint32",
+  biXPelsPerMeter: "int32",
+  biYPelsPerMeter: "int32",
+  biClrUsed: "uint32",
+  biClrImportant: "uint32"
+});
+var IconInfoStruct = koffi.struct({
+  fIcon: "bool",
+  xHotspot: "uint32",
+  yHotspot: "uint32",
+  hbmMask: "void*",
+  hbmColor: "void*"
+});
+var SHGetFileInfoW = shell32.func("SHGetFileInfoW", "uintptr_t", [
+  koffi.pointer("uint16"),
+  "uint32",
+  koffi.out(koffi.pointer(SHFILEINFOW)),
+  "uint32",
+  "uint32"
+]);
+var ExtractIconExW = shell32.func("ExtractIconExW", "uint32", [
+  koffi.pointer("uint16"),
+  "int",
+  koffi.out(koffi.pointer("void*")),
+  koffi.out(koffi.pointer("void*")),
+  "uint32"
+]);
+var DestroyIcon = user32.func("DestroyIcon", "bool", ["void*"]);
+var GetIconInfo = user32.func("GetIconInfo", "bool", ["void*", koffi.out(koffi.pointer(IconInfoStruct))]);
+var GetDIBits = gdi32.func("GetDIBits", "int", [
+  "void*",
+  "void*",
+  "uint32",
+  "uint32",
+  koffi.out("void*"),
+  koffi.out(koffi.pointer("void")),
+  "uint32"
+]);
+var GetDC = user32.func("GetDC", "void*", ["void*"]);
+var ReleaseDC = user32.func("ReleaseDC", "int", ["void*", "void*"]);
+var DeleteObject = gdi32.func("DeleteObject", "bool", ["void*"]);
+var SHGFI_ICON = 256;
+var SHGFI_SMALLICON = 1;
+var DIB_RGB_COLORS = 0;
+
+// src/windows/apps/icon-extractor.ts
+var PREFERRED_SCALES = [32, 48, 64, 96, 100, 125, 150, 200, 400];
+var IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".svg"];
+var EXECUTABLE_EXTENSIONS = [".exe", ".dll", ".cpl", ".ocx", ".scr"];
+var MIME_TYPES = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".bmp": "image/bmp",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon"
+};
+var toWide = (s) => {
+  const arr = new Uint16Array(s.length + 1);
+  for (let i = 0;i < s.length; i++)
+    arr[i] = s.charCodeAt(i);
+  return arr;
+};
+var getMime = (ext) => MIME_TYPES[ext.toLowerCase()] || "image/png";
+var getPatterns = (base, ext, scale) => [
+  `${base}.scale-${scale}${ext}`,
+  `${base}.targetsize-${scale}${ext}`,
+  `${base}.contrast-standard_scale-${scale}${ext}`,
+  `${base}.${scale}${ext}`,
+  `${base}_${scale}${ext}`,
+  `${base}-${scale}${ext}`
+];
+async function iconToBase64(hIcon) {
+  if (!hIcon || hIcon === 0)
+    return null;
   try {
+    const iconInfo = {};
+    if (!GetIconInfo(hIcon, iconInfo)) {
+      DestroyIcon(hIcon);
+      return null;
+    }
+    const hdc = GetDC(null);
+    if (!hdc) {
+      DestroyIcon(hIcon);
+      return null;
+    }
+    const bmi = Buffer.alloc(1024);
+    const bmiHeader = {
+      biSize: 40,
+      biWidth: 32,
+      biHeight: 32,
+      biPlanes: 1,
+      biBitCount: 32,
+      biCompression: 0,
+      biSizeImage: 0,
+      biXPelsPerMeter: 0,
+      biYPelsPerMeter: 0,
+      biClrUsed: 0,
+      biClrImportant: 0
+    };
+    const bufferSize = 32 * 32 * 4;
+    const pixelData = Buffer.alloc(bufferSize);
+    koffi2.encode(bmi, BITMAPINFOHEADER, bmiHeader);
+    const result = GetDIBits(hdc, iconInfo.hbmColor, 0, 32, pixelData, bmi, DIB_RGB_COLORS);
+    ReleaseDC(null, hdc);
+    DeleteObject(iconInfo.hbmMask);
+    DeleteObject(iconInfo.hbmColor);
+    DestroyIcon(hIcon);
+    if (result === 0) {
+      return null;
+    }
+    const icoHeader = Buffer.alloc(6);
+    icoHeader.writeUInt16LE(0, 0);
+    icoHeader.writeUInt16LE(1, 2);
+    icoHeader.writeUInt16LE(1, 4);
+    const icoEntry = Buffer.alloc(16);
+    icoEntry.writeUInt8(32, 0);
+    icoEntry.writeUInt8(32, 1);
+    icoEntry.writeUInt8(0, 2);
+    icoEntry.writeUInt8(0, 3);
+    icoEntry.writeUInt16LE(1, 4);
+    icoEntry.writeUInt16LE(32, 6);
+    icoEntry.writeUInt32LE(pixelData.length + 40, 8);
+    icoEntry.writeUInt32LE(22, 12);
+    const icoBitmapInfo = Buffer.alloc(40);
+    icoBitmapInfo.writeUInt32LE(40, 0);
+    icoBitmapInfo.writeInt32LE(32, 4);
+    icoBitmapInfo.writeInt32LE(64, 8);
+    icoBitmapInfo.writeUInt16LE(1, 12);
+    icoBitmapInfo.writeUInt16LE(32, 14);
+    icoBitmapInfo.writeUInt32LE(0, 16);
+    icoBitmapInfo.writeUInt32LE(pixelData.length, 20);
+    icoBitmapInfo.writeInt32LE(0, 24);
+    icoBitmapInfo.writeInt32LE(0, 28);
+    icoBitmapInfo.writeUInt32LE(0, 32);
+    icoBitmapInfo.writeUInt32LE(0, 36);
+    const icoFile = Buffer.concat([icoHeader, icoEntry, icoBitmapInfo, pixelData]);
+    const base64 = icoFile.toString("base64");
+    return `data:image/x-icon;base64,${base64}`;
+  } catch {
+    return null;
+  }
+}
+async function extractIconWithKoffi(filePath) {
+  try {
+    const wideFilePath = toWide(filePath);
+    const largeIconPtr = [0];
+    const smallIconPtr = [0];
+    const count = ExtractIconExW(wideFilePath, 0, largeIconPtr, smallIconPtr, 1);
+    if (count > 0 && smallIconPtr[0]) {
+      const iconData = await iconToBase64(smallIconPtr[0]);
+      if (iconData)
+        return iconData;
+    }
+    if (count > 0 && largeIconPtr[0]) {
+      const iconData = await iconToBase64(largeIconPtr[0]);
+      if (iconData)
+        return iconData;
+    }
+    const fileInfo = {};
+    const wideFilePathForShell = toWide(filePath);
+    const result = SHGetFileInfoW(wideFilePathForShell, 0, fileInfo, koffi2.sizeof(SHFILEINFOW), SHGFI_ICON | SHGFI_SMALLICON);
+    if (result && fileInfo.hIcon) {
+      return await iconToBase64(fileInfo.hIcon);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+async function resolveAppxIconPathDirect(iconPath) {
+  try {
+    if (existsSync(iconPath))
+      return iconPath;
     const dir = dirname(iconPath);
     const baseNameWithoutExt = basename(iconPath, extname(iconPath));
     const ext = extname(iconPath);
-    const script = `
-$ErrorActionPreference="Stop"
-$dir = "${dir.replace(/\\/g, "/")}"
-$base = "${baseNameWithoutExt}"
-$ext = "${ext}"
-
-# Check if exact path exists
-$exactPath = "${iconPath.replace(/\\/g, "/")}"
-if (Test-Path $exactPath) {
-  Write-Output $exactPath
-  exit 0
-}
-
-# Try to list files in directory
-try {
-  $files = Get-ChildItem -Path $dir -File -ErrorAction Stop | Select-Object -ExpandProperty Name
-  
-  # Try scale variants in order of preference (including common small sizes)
-  $scales = @(400, 200, 150, 125, 100, 96, 64, 48, 40, 32, 24, 20, 16)
-  foreach ($scale in $scales) {
-    $patterns = @(
-      "$base.scale-$scale$ext",
-      "$base.targetsize-$scale$ext",
-      "$base.contrast-standard_scale-$scale$ext",
-      "$base.$scale$ext",
-      "$base" + "_$scale$ext",
-      "$base-$scale$ext"
-    )
-    
-    foreach ($pattern in $patterns) {
-      if ($files -contains $pattern) {
-        Write-Output (Join-Path $dir $pattern)
-        exit 0
+    if (!existsSync(dir))
+      return null;
+    let files;
+    try {
+      files = readdirSync(dir);
+    } catch {
+      for (const scale of PREFERRED_SCALES.slice(0, 5)) {
+        for (const pattern of getPatterns(baseNameWithoutExt, ext, scale).slice(0, 3)) {
+          const testPath = join(dir, pattern);
+          if (existsSync(testPath))
+            return testPath;
+        }
+      }
+      return null;
+    }
+    for (const scale of PREFERRED_SCALES) {
+      for (const pattern of getPatterns(baseNameWithoutExt, ext, scale)) {
+        if (files.includes(pattern))
+          return join(dir, pattern);
       }
     }
-  }
-  
-  # Find any matching file
-  foreach ($file in $files) {
-    if ($file.StartsWith($base) -and $file.EndsWith($ext)) {
-      Write-Output (Join-Path $dir $file)
-      exit 0
-    }
-  }
-} catch {
-  # If we can't list directory, try common patterns directly
-  $scales = @(400, 200, 150, 125, 100, 96, 64, 48, 40, 32, 24, 20, 16)
-  foreach ($scale in $scales) {
-    $testPaths = @(
-      (Join-Path $dir "$base.scale-$scale$ext"),
-      (Join-Path $dir "$base.targetsize-$scale$ext"),
-      (Join-Path $dir "$base.contrast-standard_scale-$scale$ext")
-    )
-    
-    foreach ($testPath in $testPaths) {
-      if (Test-Path $testPath) {
-        Write-Output $testPath
-        exit 0
-      }
-    }
-  }
-}
-
-exit 1
-`.trim();
-    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
-      encoding: "utf8",
-      windowsHide: true,
-      maxBuffer: 1024 * 1024
-    });
-    const result = stdout.trim();
-    return result || null;
+    const matchingFile = files.find((f) => f.startsWith(baseNameWithoutExt) && f.endsWith(ext));
+    return matchingFile ? join(dir, matchingFile) : null;
   } catch {
     return null;
   }
 }
 async function resolveAppxIconPath(iconPath) {
   if (iconPath.includes("WindowsApps")) {
-    return await resolveAppxIconPathWithPowerShell(iconPath);
+    return await resolveAppxIconPathDirect(iconPath);
   }
   try {
     if (existsSync(iconPath)) {
@@ -140,14 +269,9 @@ async function resolveAppxIconPath(iconPath) {
     try {
       files = readdirSync(dir);
     } catch {
-      const commonScales = [400, 200, 150, 125, 100];
-      for (const scale of commonScales) {
-        const testPaths = [
-          join(dir, `${baseNameWithoutExt}.scale-${scale}${ext}`),
-          join(dir, `${baseNameWithoutExt}.targetsize-${scale}${ext}`),
-          join(dir, `${baseNameWithoutExt}.contrast-standard_scale-${scale}${ext}`)
-        ];
-        for (const testPath of testPaths) {
+      for (const scale of PREFERRED_SCALES.slice(0, 5)) {
+        for (const pattern of getPatterns(baseNameWithoutExt, ext, scale).slice(0, 3)) {
+          const testPath = join(dir, pattern);
           if (existsSync(testPath)) {
             return testPath;
           }
@@ -155,32 +279,10 @@ async function resolveAppxIconPath(iconPath) {
       }
       return null;
     }
-    const scales = [400, 200, 150, 125, 100];
-    for (const scale of scales) {
-      const scaledName = `${baseNameWithoutExt}.scale-${scale}${ext}`;
-      if (files.includes(scaledName)) {
-        return join(dir, scaledName);
-      }
-      const targetsizeName = `${baseNameWithoutExt}.targetsize-${scale}${ext}`;
-      if (files.includes(targetsizeName)) {
-        return join(dir, targetsizeName);
-      }
-    }
-    for (const scale of scales) {
-      const contrastName = `${baseNameWithoutExt}.contrast-standard_scale-${scale}${ext}`;
-      if (files.includes(contrastName)) {
-        return join(dir, contrastName);
-      }
-    }
-    for (const scale of scales) {
-      const altNames = [
-        `${baseNameWithoutExt}.${scale}${ext}`,
-        `${baseNameWithoutExt}_${scale}${ext}`,
-        `${baseNameWithoutExt}-${scale}${ext}`
-      ];
-      for (const altName of altNames) {
-        if (files.includes(altName)) {
-          return join(dir, altName);
+    for (const scale of PREFERRED_SCALES) {
+      for (const pattern of getPatterns(baseNameWithoutExt, ext, scale)) {
+        if (files.includes(pattern)) {
+          return join(dir, pattern);
         }
       }
     }
@@ -190,139 +292,22 @@ async function resolveAppxIconPath(iconPath) {
     return null;
   }
 }
-async function extractIconWithPowerShell(filePath) {
-  try {
-    const ext = extname(filePath).toLowerCase();
-    if (ext === ".ico") {
-      return null;
-    }
-    const script = `
-$ErrorActionPreference="Stop"
-Add-Type -AssemblyName System.Drawing
-
-function Get-IconFromFile {
-  param([string]$Path)
-  
-  if (-not (Test-Path $Path)) {
-    return $null
-  }
-
-  try {
-    # For executables and DLLs, extract the icon
-    $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($Path)
-    if ($icon) {
-      $ms = New-Object System.IO.MemoryStream
-      $icon.Save($ms)
-      $bytes = $ms.ToArray()
-      $ms.Close()
-      $icon.Dispose()
-      return [Convert]::ToBase64String($bytes)
-    }
-  } catch {
-    # If extraction fails, try to get the file type icon
-    try {
-      $shfi = New-Object PSObject -Property @{
-        hIcon = [IntPtr]::Zero
-      }
-      
-      # Use Shell32 to get file association icon
-      Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class Shell32 {
-  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-  public struct SHFILEINFO {
-    public IntPtr hIcon;
-    public int iIcon;
-    public uint dwAttributes;
-    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-    public string szDisplayName;
-    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
-    public string szTypeName;
-  }
-  [DllImport("shell32.dll", CharSet = CharSet.Auto)]
-  public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
-  [DllImport("user32.dll", SetLastError = true)]
-  public static extern bool DestroyIcon(IntPtr hIcon);
-}
-"@
-      
-      $fileInfo = New-Object Shell32+SHFILEINFO
-      $result = [Shell32]::SHGetFileInfo($Path, 0, [ref]$fileInfo, [System.Runtime.InteropServices.Marshal]::SizeOf($fileInfo), 0x100)
-      
-      if ($result -ne [IntPtr]::Zero -and $fileInfo.hIcon -ne [IntPtr]::Zero) {
-        $icon = [System.Drawing.Icon]::FromHandle($fileInfo.hIcon)
-        $ms = New-Object System.IO.MemoryStream
-        $icon.Save($ms)
-        $bytes = $ms.ToArray()
-        $ms.Close()
-        [Shell32]::DestroyIcon($fileInfo.hIcon)
-        $icon.Dispose()
-        return [Convert]::ToBase64String($bytes)
-      }
-    } catch {}
-  }
-  
-  return $null
-}
-
-Get-IconFromFile -Path "${filePath.replace(/\\/g, "\\\\")}"
-`.trim();
-    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
-      encoding: "utf8",
-      windowsHide: true,
-      maxBuffer: 1024 * 1024 * 10
-    });
-    const result = stdout.trim();
-    if (result) {
-      return `data:image/x-icon;base64,${result}`;
-    }
-    return null;
-  } catch {
+async function extractIcon(filePath) {
+  if (extname(filePath).toLowerCase() === ".ico") {
     return null;
   }
+  return await extractIconWithKoffi(filePath);
 }
 async function fileToBase64DataURI(filePath) {
   try {
     const resolvedPath = await resolveAppxIconPath(filePath);
     if (!resolvedPath)
       return null;
-    if (filePath.includes("WindowsApps") || resolvedPath.includes("WindowsApps")) {
-      return await fileToBase64DataURIWithPowerShell(resolvedPath);
-    }
     const buffer = await readFile(resolvedPath);
     const ext = extname(resolvedPath);
-    const mimeType = getMimeType(ext);
+    const mimeType = getMime(ext);
     const base64 = buffer.toString("base64");
     return `data:${mimeType};base64,${base64}`;
-  } catch {
-    return null;
-  }
-}
-async function fileToBase64DataURIWithPowerShell(filePath) {
-  try {
-    const ext = extname(filePath);
-    const mimeType = getMimeType(ext);
-    const normalizedPath = filePath.replace(/\\/g, "/");
-    const script = `
-    $ErrorActionPreference="Stop"
-    try {
-      $bytes = [System.IO.File]::ReadAllBytes("${normalizedPath}")
-      [Convert]::ToBase64String($bytes)
-    } catch {
-      exit 1
-    }
-    `.trim();
-    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
-      encoding: "utf8",
-      windowsHide: true,
-      maxBuffer: 1024 * 1024 * 10
-    });
-    const result = stdout.trim();
-    if (result) {
-      return `data:${mimeType};base64,${result}`;
-    }
-    return null;
   } catch {
     return null;
   }
@@ -332,43 +317,36 @@ async function extractIconAsBase64(filePath) {
     return null;
   }
   const cleanPath = filePath.trim();
+  const ext = extname(cleanPath).toLowerCase();
   const isWindowsApps = cleanPath.includes("WindowsApps");
   if (!isWindowsApps && !existsSync(cleanPath)) {
     return null;
   }
-  const ext = extname(cleanPath).toLowerCase();
-  const imageExtensions = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".svg"];
-  if (imageExtensions.includes(ext)) {
+  if (IMAGE_EXTENSIONS.includes(ext) || ext === ".ico") {
     return await fileToBase64DataURI(cleanPath);
   }
-  if (ext === ".ico") {
-    return await fileToBase64DataURI(cleanPath);
+  if (EXECUTABLE_EXTENSIONS.includes(ext)) {
+    return await extractIcon(cleanPath);
   }
-  const executableExtensions = [".exe", ".dll", ".cpl", ".ocx", ".scr"];
-  if (executableExtensions.includes(ext)) {
-    return await extractIconWithPowerShell(cleanPath);
-  }
-  return await extractIconWithPowerShell(cleanPath);
+  return await extractIcon(cleanPath);
 }
 
-// src/windows/apps/app-icon.ts
-function createAppIcon(path, preloadedBase64) {
+// src/windows/apps/apps.ts
+var execFileAsync = promisify(execFile);
+var createAppIcon = (path, preloadedBase64) => {
   let cachedBase64 = preloadedBase64 ?? null;
   let loadPromise = null;
   return {
     path,
     getBase64: async () => {
-      if (cachedBase64 !== null) {
+      if (cachedBase64 !== null)
         return cachedBase64;
-      }
-      if (loadPromise) {
+      if (loadPromise)
         return loadPromise;
-      }
       loadPromise = (async () => {
         try {
-          if (cachedBase64 !== null) {
+          if (cachedBase64 !== null)
             return cachedBase64;
-          }
           const base64 = await extractIconAsBase64(path);
           cachedBase64 = base64 ?? "";
           return cachedBase64;
@@ -382,17 +360,14 @@ function createAppIcon(path, preloadedBase64) {
       return loadPromise;
     }
   };
-}
-
-// src/windows/apps/apps.ts
-var execFileAsync2 = promisify2(execFile2);
+};
 var hashStringToNumber = (value) => Math.abs([...value].reduce((acc, ch) => (acc << 5) - acc + ch.charCodeAt(0) | 0, 0)) || 1;
 var cleanIconPath = (path) => {
   const raw = typeof path === "string" ? path : path == null ? "" : String(path);
   return raw.trim().replace(/^['"]|['"]$/g, "").replace(/,\s*-?\d+$/, "");
 };
 var ps = async (script) => {
-  const { stdout } = await execFileAsync2("powershell.exe", ["-NoProfile", "-Command", script], {
+  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
     encoding: "utf8",
     windowsHide: true,
     maxBuffer: 1024 * 1024 * 64
@@ -552,7 +527,7 @@ class WindowsAppRegistry {
 }
 
 // src/windows/process/process.ts
-import koffi3 from "koffi";
+import koffi5 from "koffi";
 
 // src/utils/koffi-utils.ts
 function wideCharArrayToString(arr) {
@@ -567,15 +542,15 @@ function wideCharArrayToString(arr) {
 }
 
 // src/windows/process/koffi-defs.ts
-import koffi2 from "koffi";
+import koffi4 from "koffi";
 
 // src/utils/koffi-globals.ts
-import koffi from "koffi";
-var kernel32 = koffi.load("kernel32.dll");
-var advapi32 = koffi.load("advapi32.dll");
+import koffi3 from "koffi";
+var kernel32 = koffi3.load("kernel32.dll");
+var advapi32 = koffi3.load("advapi32.dll");
 
 // src/windows/process/koffi-defs.ts
-var PROCESSENTRY32W_STRUCT = koffi2.struct("PROCESSENTRY32W", {
+var PROCESSENTRY32W_STRUCT = koffi4.struct("PROCESSENTRY32W", {
   dwSize: "uint32",
   cntUsage: "uint32",
   th32ProcessID: "uint32",
@@ -585,7 +560,7 @@ var PROCESSENTRY32W_STRUCT = koffi2.struct("PROCESSENTRY32W", {
   th32ParentProcessID: "uint32",
   pcPriClassBase: "int32",
   dwFlags: "uint32",
-  szExeFile: koffi2.array("uint16", 260)
+  szExeFile: koffi4.array("uint16", 260)
 });
 var CreateToolhelp32Snapshot = kernel32.func("CreateToolhelp32Snapshot", "void*", ["uint32", "uint32"]);
 var Process32FirstW = kernel32.func("Process32FirstW", "bool", ["void*", "void*"]);
@@ -608,9 +583,9 @@ class WindowsProcessManager {
         console.error("CreateToolhelp32Snapshot failed:", GetLastError());
         return [];
       }
-      const pe32Buffer = Buffer.alloc(koffi3.sizeof(PROCESSENTRY32W_STRUCT));
-      koffi3.encode(pe32Buffer, PROCESSENTRY32W_STRUCT, {
-        dwSize: koffi3.sizeof(PROCESSENTRY32W_STRUCT),
+      const pe32Buffer = Buffer.alloc(koffi5.sizeof(PROCESSENTRY32W_STRUCT));
+      koffi5.encode(pe32Buffer, PROCESSENTRY32W_STRUCT, {
+        dwSize: koffi5.sizeof(PROCESSENTRY32W_STRUCT),
         cntUsage: 0,
         th32ProcessID: 0,
         th32DefaultHeapID: 0,
@@ -623,7 +598,7 @@ class WindowsProcessManager {
       });
       if (Process32FirstW(hSnapshot, pe32Buffer)) {
         do {
-          const processEntry = koffi3.decode(pe32Buffer, PROCESSENTRY32W_STRUCT);
+          const processEntry = koffi5.decode(pe32Buffer, PROCESSENTRY32W_STRUCT);
           const processName = wideCharArrayToString(processEntry.szExeFile);
           processes.push({
             id: processEntry.th32ProcessID,
