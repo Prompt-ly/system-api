@@ -26,6 +26,16 @@ export const BITMAPINFOHEADER = koffi.struct("BITMAPINFOHEADER", {
   biClrImportant: "uint32"
 });
 
+export const BITMAP = koffi.struct("BITMAP", {
+  bmType: "int32",
+  bmWidth: "int32",
+  bmHeight: "int32",
+  bmWidthBytes: "int32",
+  bmPlanes: "uint16",
+  bmBitsPixel: "uint16",
+  bmBits: "void*"
+});
+
 const IconInfoStruct = koffi.struct({
   fIcon: "bool",
   xHotspot: "uint32",
@@ -64,6 +74,7 @@ export const GetDIBits = gdi32.func("GetDIBits", "int", [
 export const GetDC = user32.func("GetDC", "void*", ["void*"]);
 export const ReleaseDC = user32.func("ReleaseDC", "int", ["void*", "void*"]);
 export const DeleteObject = gdi32.func("DeleteObject", "bool", ["void*"]);
+export const GetObject = gdi32.func("GetObjectW", "int", ["void*", "int", koffi.out(koffi.pointer("void"))]);
 
 export const SHGFI_ICON = 0x000000100;
 export const SHGFI_SMALLICON = 0x000000001;

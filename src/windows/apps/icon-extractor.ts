@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import koffi from "koffi";
 import {
+  BITMAP,
   BITMAPINFOHEADER,
   DeleteObject,
   DestroyIcon,
@@ -11,6 +12,7 @@ import {
   GetDC,
   GetDIBits,
   GetIconInfo,
+  GetObject,
   ReleaseDC,
   SHFILEINFOW,
   SHGetFileInfoW,
@@ -73,11 +75,36 @@ async function iconToBase64(hIcon: unknown): Promise<string | null> {
       return null;
     }
 
+    // Get actual bitmap dimensions
+    const bitmapInfo = Buffer.alloc(koffi.sizeof(BITMAP));
+    const result = GetObject(iconInfo.hbmColor, koffi.sizeof(BITMAP), bitmapInfo);
+
+    if (result === 0) {
+      ReleaseDC(null, hdc);
+      DeleteObject(iconInfo.hbmMask);
+      DeleteObject(iconInfo.hbmColor);
+      DestroyIcon(hIcon);
+      return null;
+    }
+
+    const bitmap = koffi.decode(bitmapInfo, BITMAP);
+    const width = Math.abs(bitmap.bmWidth);
+    const height = Math.abs(bitmap.bmHeight);
+
+    // Ensure we have valid dimensions
+    if (width === 0 || height === 0 || width > 256 || height > 256) {
+      ReleaseDC(null, hdc);
+      DeleteObject(iconInfo.hbmMask);
+      DeleteObject(iconInfo.hbmColor);
+      DestroyIcon(hIcon);
+      return null;
+    }
+
     const bmi = Buffer.alloc(1024);
     const bmiHeader = {
       biSize: 40,
-      biWidth: 32,
-      biHeight: 32,
+      biWidth: width,
+      biHeight: height,
       biPlanes: 1,
       biBitCount: 32,
       biCompression: 0,
@@ -88,19 +115,19 @@ async function iconToBase64(hIcon: unknown): Promise<string | null> {
       biClrImportant: 0
     };
 
-    const bufferSize = 32 * 32 * 4;
+    const bufferSize = width * height * 4;
     const pixelData = Buffer.alloc(bufferSize);
 
     koffi.encode(bmi, BITMAPINFOHEADER, bmiHeader);
 
-    const result = GetDIBits(hdc, iconInfo.hbmColor, 0, 32, pixelData, bmi, DIB_RGB_COLORS);
+    const dibResult = GetDIBits(hdc, iconInfo.hbmColor, 0, height, pixelData, bmi, DIB_RGB_COLORS);
 
     ReleaseDC(null, hdc);
     DeleteObject(iconInfo.hbmMask);
     DeleteObject(iconInfo.hbmColor);
     DestroyIcon(hIcon);
 
-    if (result === 0) {
+    if (dibResult === 0) {
       return null;
     }
 
@@ -110,8 +137,8 @@ async function iconToBase64(hIcon: unknown): Promise<string | null> {
     icoHeader.writeUInt16LE(1, 4);
 
     const icoEntry = Buffer.alloc(16);
-    icoEntry.writeUInt8(32, 0);
-    icoEntry.writeUInt8(32, 1);
+    icoEntry.writeUInt8(width >= 256 ? 0 : width, 0);
+    icoEntry.writeUInt8(height >= 256 ? 0 : height, 1);
     icoEntry.writeUInt8(0, 2);
     icoEntry.writeUInt8(0, 3);
     icoEntry.writeUInt16LE(1, 4);
@@ -121,8 +148,8 @@ async function iconToBase64(hIcon: unknown): Promise<string | null> {
 
     const icoBitmapInfo = Buffer.alloc(40);
     icoBitmapInfo.writeUInt32LE(40, 0);
-    icoBitmapInfo.writeInt32LE(32, 4);
-    icoBitmapInfo.writeInt32LE(64, 8);
+    icoBitmapInfo.writeInt32LE(width, 4);
+    icoBitmapInfo.writeInt32LE(height * 2, 8);
     icoBitmapInfo.writeUInt16LE(1, 12);
     icoBitmapInfo.writeUInt16LE(32, 14);
     icoBitmapInfo.writeUInt32LE(0, 16);
