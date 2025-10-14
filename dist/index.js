@@ -21,8 +21,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 // src/windows/apps/icon-extractor.ts
-import { existsSync, readdirSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import koffi2 from "koffi";
 
@@ -101,6 +100,25 @@ var SHGFI_SMALLICON = 1;
 var DIB_RGB_COLORS = 0;
 
 // src/windows/apps/icon-extractor.ts
+var runAsync = (fn) => {
+  return new Promise((resolve, reject) => {
+    setImmediate(() => {
+      try {
+        resolve(fn());
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+};
+var fileExists = async (path) => {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
 var PREFERRED_SCALES = [32, 48, 64, 96, 100, 125, 150, 200, 400];
 var IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".svg"];
 var EXECUTABLE_EXTENSIONS = [".exe", ".dll", ".cpl", ".ocx", ".scr"];
@@ -134,32 +152,33 @@ async function iconToBase64(hIcon) {
     return null;
   try {
     const iconInfo = {};
-    if (!GetIconInfo(hIcon, iconInfo)) {
-      DestroyIcon(hIcon);
+    const getIconInfoResult = await runAsync(() => GetIconInfo(hIcon, iconInfo));
+    if (!getIconInfoResult) {
+      await runAsync(() => DestroyIcon(hIcon));
       return null;
     }
-    const hdc = GetDC(null);
+    const hdc = await runAsync(() => GetDC(null));
     if (!hdc) {
-      DestroyIcon(hIcon);
+      await runAsync(() => DestroyIcon(hIcon));
       return null;
     }
     const bitmapInfo = Buffer.alloc(koffi2.sizeof(BITMAP));
-    const result = GetObject(iconInfo.hbmColor, koffi2.sizeof(BITMAP), bitmapInfo);
+    const result = await runAsync(() => GetObject(iconInfo.hbmColor, koffi2.sizeof(BITMAP), bitmapInfo));
     if (result === 0) {
-      ReleaseDC(null, hdc);
-      DeleteObject(iconInfo.hbmMask);
-      DeleteObject(iconInfo.hbmColor);
-      DestroyIcon(hIcon);
+      await runAsync(() => ReleaseDC(null, hdc));
+      await runAsync(() => DeleteObject(iconInfo.hbmMask));
+      await runAsync(() => DeleteObject(iconInfo.hbmColor));
+      await runAsync(() => DestroyIcon(hIcon));
       return null;
     }
     const bitmap = koffi2.decode(bitmapInfo, BITMAP);
     const width = Math.abs(bitmap.bmWidth);
     const height = Math.abs(bitmap.bmHeight);
     if (width === 0 || height === 0 || width > 256 || height > 256) {
-      ReleaseDC(null, hdc);
-      DeleteObject(iconInfo.hbmMask);
-      DeleteObject(iconInfo.hbmColor);
-      DestroyIcon(hIcon);
+      await runAsync(() => ReleaseDC(null, hdc));
+      await runAsync(() => DeleteObject(iconInfo.hbmMask));
+      await runAsync(() => DeleteObject(iconInfo.hbmColor));
+      await runAsync(() => DestroyIcon(hIcon));
       return null;
     }
     const bmi = Buffer.alloc(1024);
@@ -179,11 +198,11 @@ async function iconToBase64(hIcon) {
     const bufferSize = width * height * 4;
     const pixelData = Buffer.alloc(bufferSize);
     koffi2.encode(bmi, BITMAPINFOHEADER, bmiHeader);
-    const dibResult = GetDIBits(hdc, iconInfo.hbmColor, 0, height, pixelData, bmi, DIB_RGB_COLORS);
-    ReleaseDC(null, hdc);
-    DeleteObject(iconInfo.hbmMask);
-    DeleteObject(iconInfo.hbmColor);
-    DestroyIcon(hIcon);
+    const dibResult = await runAsync(() => GetDIBits(hdc, iconInfo.hbmColor, 0, height, pixelData, bmi, DIB_RGB_COLORS));
+    await runAsync(() => ReleaseDC(null, hdc));
+    await runAsync(() => DeleteObject(iconInfo.hbmMask));
+    await runAsync(() => DeleteObject(iconInfo.hbmColor));
+    await runAsync(() => DestroyIcon(hIcon));
     if (dibResult === 0) {
       return null;
     }
@@ -224,7 +243,7 @@ async function extractIconWithKoffi(filePath) {
     const wideFilePath = toWide(filePath);
     const largeIconPtr = [0];
     const smallIconPtr = [0];
-    const count = ExtractIconExW(wideFilePath, 0, largeIconPtr, smallIconPtr, 1);
+    const count = await runAsync(() => ExtractIconExW(wideFilePath, 0, largeIconPtr, smallIconPtr, 1));
     if (count > 0 && smallIconPtr[0]) {
       const iconData = await iconToBase64(smallIconPtr[0]);
       if (iconData)
@@ -237,7 +256,7 @@ async function extractIconWithKoffi(filePath) {
     }
     const fileInfo = {};
     const wideFilePathForShell = toWide(filePath);
-    const result = SHGetFileInfoW(wideFilePathForShell, 0, fileInfo, koffi2.sizeof(SHFILEINFOW), SHGFI_ICON | SHGFI_SMALLICON);
+    const result = await runAsync(() => SHGetFileInfoW(wideFilePathForShell, 0, fileInfo, koffi2.sizeof(SHFILEINFOW), SHGFI_ICON | SHGFI_SMALLICON));
     if (result && fileInfo.hIcon) {
       return await iconToBase64(fileInfo.hIcon);
     }
@@ -248,21 +267,21 @@ async function extractIconWithKoffi(filePath) {
 }
 async function resolveAppxIconPathDirect(iconPath) {
   try {
-    if (existsSync(iconPath))
+    if (await fileExists(iconPath))
       return iconPath;
     const dir = dirname(iconPath);
     const baseNameWithoutExt = basename(iconPath, extname(iconPath));
     const ext = extname(iconPath);
-    if (!existsSync(dir))
+    if (!await fileExists(dir))
       return null;
     let files;
     try {
-      files = readdirSync(dir);
+      files = await readdir(dir);
     } catch {
       for (const scale of PREFERRED_SCALES.slice(0, 5)) {
         for (const pattern of getPatterns(baseNameWithoutExt, ext, scale).slice(0, 3)) {
           const testPath = join(dir, pattern);
-          if (existsSync(testPath))
+          if (await fileExists(testPath))
             return testPath;
         }
       }
@@ -285,23 +304,23 @@ async function resolveAppxIconPath(iconPath) {
     return await resolveAppxIconPathDirect(iconPath);
   }
   try {
-    if (existsSync(iconPath)) {
+    if (await fileExists(iconPath)) {
       return iconPath;
     }
     const dir = dirname(iconPath);
     const baseNameWithoutExt = basename(iconPath, extname(iconPath));
     const ext = extname(iconPath);
-    if (!existsSync(dir)) {
+    if (!await fileExists(dir)) {
       return null;
     }
     let files;
     try {
-      files = readdirSync(dir);
+      files = await readdir(dir);
     } catch {
       for (const scale of PREFERRED_SCALES.slice(0, 5)) {
         for (const pattern of getPatterns(baseNameWithoutExt, ext, scale).slice(0, 3)) {
           const testPath = join(dir, pattern);
-          if (existsSync(testPath)) {
+          if (await fileExists(testPath)) {
             return testPath;
           }
         }
@@ -348,7 +367,7 @@ async function extractIconAsBase64(filePath) {
   const cleanPath = filePath.trim();
   const ext = extname(cleanPath).toLowerCase();
   const isWindowsApps = cleanPath.includes("WindowsApps");
-  if (!isWindowsApps && !existsSync(cleanPath)) {
+  if (!isWindowsApps && !await fileExists(cleanPath)) {
     return null;
   }
   if (IMAGE_EXTENSIONS.includes(ext) || ext === ".ico") {
