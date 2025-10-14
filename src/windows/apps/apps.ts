@@ -1,9 +1,38 @@
-import type { App, AppRegistry } from "@/modules/apps";
+import type { App, AppIcon, AppRegistry } from "@/modules/apps";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { createAppIcon } from "./app-icon";
+import { extractIconAsBase64 } from "./icon-extractor";
 
 const execFileAsync = promisify(execFile);
+
+const createAppIcon = (path: string, preloadedBase64?: string | null): AppIcon => {
+  let cachedBase64 = preloadedBase64 ?? null;
+  let loadPromise: Promise<string> | null = null;
+
+  return {
+    path,
+    getBase64: async () => {
+      if (cachedBase64 !== null) return cachedBase64;
+      if (loadPromise) return loadPromise;
+
+      loadPromise = (async () => {
+        try {
+          if (cachedBase64 !== null) return cachedBase64;
+          const base64 = await extractIconAsBase64(path);
+          cachedBase64 = base64 ?? "";
+          return cachedBase64;
+        } catch {
+          cachedBase64 = "";
+          return "";
+        } finally {
+          loadPromise = null;
+        }
+      })();
+
+      return loadPromise;
+    }
+  };
+};
 
 const hashStringToNumber = (value: string): number =>
   Math.abs([...value].reduce((acc, ch) => ((acc << 5) - acc + ch.charCodeAt(0)) | 0, 0)) || 1;
