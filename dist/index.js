@@ -181,7 +181,9 @@ function parseAppsFromPowerShell() {
 }
 class WindowsAppRegistry {
   apps = [];
-  async fetch() {
+  async getApps(refresh) {
+    if (this.apps.length > 0 && !refresh)
+      return this.apps;
     const raw = parseAppsFromPowerShell();
     const seen = new Set;
     const unique = raw.filter((a) => {
@@ -207,8 +209,6 @@ class WindowsAppRegistry {
         installDate: undefined
       };
     });
-  }
-  listApps() {
     return this.apps;
   }
   getApp(id) {

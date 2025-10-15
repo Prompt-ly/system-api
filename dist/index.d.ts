@@ -11,8 +11,7 @@ export interface App {
 	installDate?: Date;
 }
 export interface AppRegistry {
-	fetch(): Promise<void>;
-	listApps(): App[];
+	getApps(refresh?: boolean): Promise<App[]>;
 	getApp(id: number): App | null;
 	uninstallApp(id: number): boolean;
 }

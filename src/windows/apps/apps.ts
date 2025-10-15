@@ -190,7 +190,8 @@ export function iconToBase64(path: string): string | undefined {
 export class WindowsAppRegistry implements AppRegistry {
   private apps: App[] = [];
 
-  async fetch() {
+  async getApps(refresh?: boolean): Promise<App[]> {
+    if (this.apps.length > 0 && !refresh) return this.apps;
     const raw = parseAppsFromPowerShell();
 
     // Deduplicate
@@ -217,9 +218,7 @@ export class WindowsAppRegistry implements AppRegistry {
         installDate: undefined
       } as App;
     });
-  }
 
-  listApps(): App[] {
     return this.apps;
   }
 
