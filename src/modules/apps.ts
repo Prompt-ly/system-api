@@ -7,6 +7,7 @@ export interface App {
   location?: string;
   uninstaller?: string;
   installDate?: Date;
+  open: () => void;
 }
 
 export type AppIcon = {

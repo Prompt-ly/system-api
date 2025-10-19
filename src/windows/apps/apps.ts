@@ -2,6 +2,7 @@ import type { App, AppIcon, AppRegistry } from "@/modules/apps";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { extractIconAsBase64 } from "./icon-extractor";
+import { ShellExecuteW, SW_SHOW } from "./koffi-defs";
 
 const execFileAsync = promisify(execFile);
 
@@ -209,7 +210,13 @@ export class WindowsAppRegistry implements AppRegistry {
           icon: iconPath ? createAppIcon(iconPath) : undefined,
           location: app.location || undefined,
           uninstaller: app.uninstallCmd || undefined,
-          installDate: undefined
+          installDate: undefined,
+          open: () => {
+            if (app.location) {
+              const location = Buffer.from(`${app.location}\0`, "utf16le");
+              ShellExecuteW(null, null, location, null, null, SW_SHOW);
+            }
+          }
         } as App;
       });
 
