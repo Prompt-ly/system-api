@@ -10,11 +10,13 @@
   "type": "module",
   "files": [
     "dist/*.js",
-    "dist/*.d.ts"
+    "dist/*.d.ts",
+    "dist/*.ps1"
   ],
   "scripts": {
-    "build": "bun build --target=node ./src/index.ts --outdir=dist --external=koffi && bun run build:declaration",
+    "build": "bun build --target=node ./src/index.ts --outdir=dist --external=koffi && bun run build:declaration && bun run copy:scripts",
     "build:declaration": "dts-bundle-generator -o dist/index.d.ts src/index.ts",
+    "copy:scripts": "cp src/windows/apps/fetch-apps.ps1 dist/",
     "demo": "bun run demo.ts",
     "test": "bun test",
     "test:watch": "bun test --watch"
