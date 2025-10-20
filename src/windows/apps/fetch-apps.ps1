@@ -1,367 +1,328 @@
-# Input: wildcard to filter by name
-$AppName = "*"
+#Requires -Version 5.1
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'SilentlyContinue'
 
-# Load AppsFolder items
-$apps = (New-Object -ComObject Shell.Application).
-  NameSpace('shell:::{4234d49b-0245-4df3-b780-3893943456e1}').
-  Items() | Where-Object { $_.Name -like $AppName }
-
-# Registry roots to scan
-$regUninstRoots = @(
-  'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
-  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
-  'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
-)
-
-# Build registry maps
-$uninstMap   = @{}
-$displayIcon = @{}
-$installLoc  = @{}
-
-foreach ($root in $regUninstRoots) {
-  if (Test-Path $root) {
-    Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
-      $p = Get-ItemProperty $_.PsPath -ErrorAction SilentlyContinue
-      if (-not $p -or -not $p.DisplayName) { return }
-      
-      $dn = $p.DisplayName
-      if (-not $uninstMap.ContainsKey($dn)) { $uninstMap[$dn] = $p.UninstallString }
-      if (-not $displayIcon.ContainsKey($dn) -and $p.DisplayIcon) { $displayIcon[$dn] = $p.DisplayIcon }
-      if (-not $installLoc.ContainsKey($dn) -and $p.InstallLocation) { $installLoc[$dn] = $p.InstallLocation }
-    }
-  }
+function New-JsonObject($Type, $Id, $Icon, $Name, $Launch) {
+  [pscustomobject]@{ id = $Id; name = $Name; type = $Type; icon = $Icon; launch = $Launch }
 }
 
-# Appx packages
-$appxPkgs = @{}
-Get-AppxPackage -ErrorAction SilentlyContinue | ForEach-Object {
-  $appxPkgs[$_.PackageFullName] = $_
-}
+function Get-UwpAppIcons([string]$PackageName) {
+  function Find-BestIcon($SearchDir, $IconName, $SubdirHint) {
+    if (-not (Test-Path $SearchDir)) { return $null }
+    Get-ChildItem -LiteralPath $SearchDir -Recurse -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.BaseName -like "*$IconName*" -and $_.Extension -in '.png','.ico' } |
+      Sort-Object {
+        $score = 0
+        if ($SubdirHint -and ($_.Directory.Name -eq $SubdirHint -or $_.Directory.Parent.Name -eq $SubdirHint)) { $score += 1000 }
+        if ($_.Name -match '(?:targetsize|scale)-(\d+)') { $score += [int]$matches[1] }
+        $score
+      } -Descending | Select-Object -First 1
+  }
 
-# Start Menu cache
-$shortcutCache = @{}
-@("$env:APPDATA\Microsoft\Windows\Start Menu\Programs",
-  "$env:ProgramData\Microsoft\Windows\Start Menu\Programs") | ForEach-Object {
-  if (Test-Path $_) {
-    Get-ChildItem $_ -Recurse -Filter "*.lnk" -ErrorAction SilentlyContinue | ForEach-Object {
-      if (-not $shortcutCache.ContainsKey($_.BaseName)) {
-        $shortcutCache[$_.BaseName] = $_.FullName
-      }
-    }
-  }
-}
+  function Get-BestScaleAsset($InstallLocation, $RelativePath) {
+    $rel = $RelativePath -replace '/', '\\'
+    $basePath = Join-Path $InstallLocation $rel
+    if (Test-Path -LiteralPath $basePath) { return (Resolve-Path -LiteralPath $basePath).Path }
 
-function Get-ValidPath {
-  param([string]$spec)
-  if (-not $spec) { return $null }
-  if ($spec -match '^[A-Za-z0-9\.\-]+_[A-Za-z0-9]+!') { return $null }
-  
-  $s = $spec.Trim('"')
-  if (-not $s) { return $null }
-  
-  if ($s -match '^(.*?),(-?\d+)$') {
-    $file = $Matches[1].Trim('"')
-    if ($file -and (Test-Path $file -ErrorAction SilentlyContinue)) { return $s }
-    return $null
-  }
-  if (Test-Path $s -ErrorAction SilentlyContinue) { return $s }
-  return $null
-}
+    $dir = Split-Path $basePath -Parent
+    $name = [System.IO.Path]::GetFileNameWithoutExtension((Split-Path $basePath -Leaf))
+    $subdirHint = ($RelativePath -split '[/\\]')[0]
+    $fallbackPaths = @((Join-Path $InstallLocation 'Assets'), (Join-Path $InstallLocation 'assets'), $InstallLocation)
 
-function Find-UwpLogo {
-  param([string]$path)
-  if (-not $path -or -not (Test-Path $path)) { return $null }
-  
-  foreach ($logo in @('Assets\Square44x44Logo.targetsize-32.png',
-                      'Assets\Square44x44Logo.scale-200.png',
-                      'Assets\Square44x44Logo.png',
-                      'Assets\Square150x150Logo.png',
-                      'Assets\StoreLogo.png')) {
-    $full = Join-Path $path $logo
-    if (Test-Path $full) { return $full }
-  }
-  return $null
-}
-
-# Find real executable for an app
-function Find-AppExe {
-  param($name, $searchDirs)
-  
-  foreach ($dir in $searchDirs) {
-    if (-not $dir -or -not (Test-Path $dir)) { continue }
-    
-    # Try name-based patterns
-    foreach ($pattern in @("$name.exe", "$($name -replace ' ','').exe", "$($name -replace ' .*$','').exe")) {
-      $exe = Join-Path $dir $pattern
-      if (Test-Path $exe) { return $exe }
-    }
-    
-    # Find .ico files
-    $ico = Get-ChildItem $dir -Filter "*.ico" -File -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($ico) { return $ico.FullName }
-    
-    # Find main exe (not uninstaller/updater/utility)
-    $mainExe = Get-ChildItem $dir -Filter "*.exe" -File -ErrorAction SilentlyContinue | 
-               Where-Object { $_.Name -notmatch 'uninstall|update|setup|installer|7z|vcredist|directx' -and $_.Length -gt 500KB } | 
-               Sort-Object Length -Descending |
-               Select-Object -First 1
-    if ($mainExe) { return $mainExe.FullName }
-  }
-  return $null
-}
-
-# Resolve path from shortcut
-function Get-LnkTarget {
-  param([string]$lnkPath)
-  if (-not $lnkPath -or -not (Test-Path $lnkPath)) { return $null }
-  try {
-    $wsh = New-Object -ComObject WScript.Shell
-    $lnk = $wsh.CreateShortcut($lnkPath)
-    return @{
-      Target = $lnk.TargetPath
-      Icon = $lnk.IconLocation
-      WorkingDir = $lnk.WorkingDirectory
-    }
-  } catch { return $null }
-}
-
-# Main processing function
-function Process-App {
-  param($item)
-  
-  $name = $item.Name
-  $rawPath = $item.Path
-  
-  # Initialize results
-  $result = @{
-    Name = $name
-    Path = $rawPath
-    Icon = $null
-    Uninstall = $null
-  }
-  
-  # Try to get extended properties
-  $pkgFull = $null
-  $pkgInstall = $null
-  try { $pkgFull = $item.ExtendedProperty('System.AppUserModel.PackageFullName') } catch {}
-  try { $pkgInstall = $item.ExtendedProperty('System.AppUserModel.PackageInstallPath') } catch {}
-  try { $imagePath = $item.ExtendedProperty('System.ImagePath') } catch {}
-  
-  # Collect potential search directories
-  $searchDirs = @()
-  
-  # 1) If we have ImagePath, use it
-  if ($imagePath) {
-    $valid = Get-ValidPath $imagePath
-    if ($valid) {
-      $result.Icon = $valid
-      if ($valid -match '\.exe$') {
-        $result.Path = $valid
-        $dir = Split-Path $valid -Parent
-        if ($dir) { $searchDirs += $dir }
-      }
-    }
-  }
-  
-  # 2) If path is a real file, use it
-  if (-not $result.Path -or $result.Path -notmatch '\\') {
-    $valid = Get-ValidPath $rawPath
-    if ($valid) {
-      $result.Path = $valid
-      $result.Icon = $valid
-      $dir = Split-Path $valid -Parent
-      if ($dir) { $searchDirs += $dir }
-    }
-  }
-  
-  # 3) Check if it's a .lnk
-  if ($rawPath -like '*.lnk' -and (Test-Path $rawPath)) {
-    $lnkInfo = Get-LnkTarget $rawPath
-    if ($lnkInfo) {
-      if ($lnkInfo.Target) { 
-        $result.Path = $lnkInfo.Target
-        $dir = Split-Path $lnkInfo.Target -Parent
-        if ($dir) { $searchDirs += $dir }
-      }
-      if ($lnkInfo.Icon) { $result.Icon = (Get-ValidPath $lnkInfo.Icon) }
-      if ($lnkInfo.WorkingDir -and (Test-Path $lnkInfo.WorkingDir)) {
-        $searchDirs += $lnkInfo.WorkingDir
-      }
-    }
-  }
-  
-  # 4) UWP package handling
-  if ($pkgFull -and $appxPkgs.ContainsKey($pkgFull)) {
-    $pkg = $appxPkgs[$pkgFull]
-    $result.Uninstall = "powershell -NoProfile -Command Remove-AppxPackage -Package `"$pkgFull`""
-    
-    if ($pkg.InstallLocation -and (Test-Path $pkg.InstallLocation)) {
-      $searchDirs += $pkg.InstallLocation
-      
-      # Try to find the actual executable from manifest
-      $manifest = Join-Path $pkg.InstallLocation "AppxManifest.xml"
-      if (Test-Path $manifest) {
-        try {
-          [xml]$xml = Get-Content $manifest
-          $app = $xml.Package.Applications.Application | Select-Object -First 1
-          if ($app.Executable) {
-            $exePath = Join-Path $pkg.InstallLocation $app.Executable
-            if (Test-Path $exePath) {
-              $result.Path = $exePath
-            }
-          }
-        } catch {}
-      }
-      
-      # UWP logo
-      if (-not $result.Icon) {
-        $logo = Find-UwpLogo $pkg.InstallLocation
-        if ($logo) { $result.Icon = $logo }
-      }
-    }
-  }
-  
-  # 5) Check registry by name
-  if (-not $result.Uninstall -and $uninstMap.ContainsKey($name)) {
-    $result.Uninstall = $uninstMap[$name]
-  }
-  
-  if (-not $result.Icon -and $displayIcon.ContainsKey($name)) {
-    $valid = Get-ValidPath $displayIcon[$name]
-    if ($valid) { $result.Icon = $valid }
-  }
-  
-  if ($installLoc.ContainsKey($name)) {
-    $searchDirs += $installLoc[$name]
-  }
-  
-  # 6) Check Start Menu shortcuts
-  if ($shortcutCache.ContainsKey($name)) {
-    $lnkInfo = Get-LnkTarget $shortcutCache[$name]
-    if ($lnkInfo) {
-      if (-not $result.Path -or $result.Path -notmatch '\\') {
-        if ($lnkInfo.Target) { $result.Path = $lnkInfo.Target }
-      }
-      if (-not $result.Icon -and $lnkInfo.Icon) {
-        $valid = Get-ValidPath $lnkInfo.Icon
-        if ($valid) { $result.Icon = $valid }
-      }
-      if ($lnkInfo.WorkingDir -and (Test-Path $lnkInfo.WorkingDir)) {
-        $searchDirs += $lnkInfo.WorkingDir
-      }
-    }
-  }
-  
-  # 7) Extract search term from path/name for smart searching
-  $searchTerm = $null
-  if ($rawPath -match '\.([a-z0-9\-]+)(?:\.|$)') {
-    $searchTerm = $Matches[1]
-  } elseif ($name -match '^(\w+)') {
-    $searchTerm = $Matches[1]
-  }
-  
-  if ($searchTerm) {
-    # Add common locations
-    $searchDirs += @(
-      "$env:LOCALAPPDATA\Programs\$searchTerm",
-      "$env:LOCALAPPDATA\$searchTerm",
-      "$env:PROGRAMFILES\$searchTerm",
-      "${env:PROGRAMFILES(x86)}\$searchTerm",
-      "$env:PROGRAMFILES\$name",
-      "$env:LOCALAPPDATA\Programs\$name"
-    )
-  }
-  
-  # 8) Deep search in search directories
-  if (-not $result.Icon -or -not $result.Path -or $result.Path -notmatch '\\') {
-    $found = Find-AppExe $name ($searchDirs | Select-Object -Unique)
-    if ($found) {
-      if (-not $result.Icon) { $result.Icon = $found }
-      if (-not $result.Path -or $result.Path -notmatch '\\') {
-        if ($found -match '\.exe$') { $result.Path = $found }
-      }
-    }
-  }
-  
-  # 9) Generate uninstall string if we found the path but no uninstall
-  if (-not $result.Uninstall -and $result.Path -and (Test-Path $result.Path)) {
-    $dir = Split-Path $result.Path -Parent
-    
-    # Look for uninstaller
-    $uninstallers = Get-ChildItem $dir -Filter "*uninstall*.exe" -File -ErrorAction SilentlyContinue
-    if ($uninstallers) {
-      $result.Uninstall = "`"$($uninstallers[0].FullName)`""
-    } else {
-      # Check parent directory
-      $parentDir = Split-Path $dir -Parent
-      $uninstallers = Get-ChildItem $parentDir -Filter "*uninstall*.exe" -File -ErrorAction SilentlyContinue
-      if ($uninstallers) {
-        $result.Uninstall = "`"$($uninstallers[0].FullName)`""
-      }
-    }
-  }
-  
-  # 10) Handle built-in Windows apps
-  $builtInApps = @{
-    'File Explorer' = @{ Path = "$env:WINDIR\explorer.exe"; Icon = "$env:WINDIR\explorer.exe"; Uninstall = 'Built-in Windows component' }
-    'Control Panel' = @{ Path = "$env:WINDIR\System32\control.exe"; Icon = "$env:WINDIR\System32\control.exe"; Uninstall = 'Built-in Windows component' }
-    'Windows Tools' = @{ Path = "$env:WINDIR\System32\control.exe"; Icon = "$env:WINDIR\System32\control.exe"; Uninstall = 'Built-in Windows component' }
-    'Task Manager' = @{ Path = "$env:WINDIR\System32\taskmgr.exe"; Icon = "$env:WINDIR\System32\taskmgr.exe"; Uninstall = 'Built-in Windows component' }
-    'Run' = @{ Path = "$env:WINDIR\System32\rundll32.exe"; Icon = "$env:WINDIR\System32\shell32.dll,24"; Uninstall = 'Built-in Windows component' }
-  }
-  
-  if ($builtInApps.ContainsKey($name)) {
-    $app = $builtInApps[$name]
-    $result.Path = $app.Path
-    $result.Icon = $app.Icon
-    $result.Uninstall = $app.Uninstall
-  }
-  
-  # 11) Better uninstall string generation
-  if (-not $result.Uninstall -or $result.Uninstall -eq 'N/A') {
-    if ($result.Path -and $result.Path -match '\\' -and (Test-Path $result.Path)) {
-      $dir = Split-Path $result.Path -Parent
-      
-      # Look for uninstaller in same directory or parent
-      $uninstallers = @()
-      $uninstallers += Get-ChildItem $dir -Filter "*uninstall*.exe" -File -ErrorAction SilentlyContinue
-      if (-not $uninstallers) {
-        $parentDir = Split-Path $dir -Parent
-        if ($parentDir) {
-          $uninstallers += Get-ChildItem $parentDir -Filter "*uninstall*.exe" -File -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $dir) {
+      foreach ($pattern in @("$name.scale-*.png", "$name.targetsize-*.*", "$name.scale-*.*", "$name.*")) {
+        $candidates = Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like $pattern }
+        if ($candidates) {
+          return ($candidates | Sort-Object { if ($_.Name -match '(?:targetsize|scale)-(\d+)') { [int]$matches[1] } else { 0 } } -Descending | Select-Object -First 1).FullName
         }
       }
-      
-      if ($uninstallers) {
-        $result.Uninstall = "`"$($uninstallers[0].FullName)`""
-      } else {
-        # No uninstaller found - provide manual deletion path
-        $result.Uninstall = "No uninstaller found - manual deletion required"
+      $found = Find-BestIcon $dir $name $subdirHint
+      if ($found) { return $found.FullName }
+    }
+
+    foreach ($fallbackDir in $fallbackPaths) {
+      $ico = Get-ChildItem -LiteralPath $fallbackDir -File -Filter '*.ico' -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($ico) { return $ico.FullName }
+      $found = Find-BestIcon $fallbackDir $name $subdirHint
+      if ($found) { return $found.FullName }
+      foreach ($commonName in @('AppList', 'Square44x44Logo', 'Square150x150Logo', 'Logo')) {
+        $found = Find-BestIcon $fallbackDir $commonName $subdirHint
+        if ($found) { return $found.FullName }
       }
-    } elseif ($rawPath -match '^https?://') {
-      $result.Uninstall = "Web link - no uninstallation needed"
-    } else {
-      $result.Uninstall = "N/A"
+    }
+    return $null
+  }
+
+  $pkg = Get-AppxPackage -Name $PackageName -ErrorAction Stop
+  $manifestPath = Join-Path $pkg.InstallLocation 'AppxManifest.xml'
+  if (-not (Test-Path -LiteralPath $manifestPath)) { throw "AppxManifest not found" }
+
+  [xml]$xml = Get-Content -LiteralPath $manifestPath
+  $nsm = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+  $nsm.AddNamespace('ns', $xml.DocumentElement.NamespaceURI)
+  foreach ($prefix in 'uap','uap2','uap3','uap4','uap5','uap6','uap7','uap10') {
+    try { $uri = $xml.DocumentElement.GetNamespaceOfPrefix($prefix); if ($uri) { $nsm.AddNamespace($prefix, $uri) } } catch {}
+  }
+
+  $apps = $xml.SelectNodes('/ns:Package/ns:Applications/ns:Application', $nsm)
+  if (-not $apps) { return @() }
+
+  $results = @()
+  foreach ($app in $apps) {
+    $appId = $app.GetAttribute('Id')
+    $aumid = "$($pkg.PackageFamilyName)!$appId"
+    $ve = $app.SelectSingleNode('uap:VisualElements', $nsm)
+    if (-not $ve) { $ve = $app.SelectSingleNode('VisualElements', $nsm) }
+
+    $iconRel = $null
+    if ($ve) {
+      $iconRel = $ve.GetAttribute('Square44x44Logo')
+      if ([string]::IsNullOrWhiteSpace($iconRel)) { $iconRel = $ve.GetAttribute('Logo') }
+    }
+
+    $iconPath = $null
+    if (-not [string]::IsNullOrWhiteSpace($iconRel) -and -not ($iconRel -like 'ms-resource:*')) {
+      $iconPath = Get-BestScaleAsset $pkg.InstallLocation $iconRel
+    }
+
+    $results += [PSCustomObject]@{
+      PackageName = $pkg.Name; PackageFamilyName = $pkg.PackageFamilyName
+      AUMID = $aumid; ApplicationId = $appId; IconPath = $iconPath
     }
   }
-  
-  # 12) Fallbacks
-  if (-not $result.Icon) {
-    $result.Icon = "$env:WINDIR\System32\shell32.dll,2"
+  return $results
+}
+
+function Parse-LnkShortcut($Path) {
+  try {
+    $wsh = New-Object -ComObject WScript.Shell
+    $lnk = $wsh.CreateShortcut($Path)
+    $iconPath = $null; $iconIndex = 0
+    if ($lnk.IconLocation) {
+      $parts = $lnk.IconLocation -split ',', 2
+      $iconPath = $parts[0]
+      if ($parts.Count -gt 1) { [void][int]::TryParse($parts[1], [ref]$iconIndex) }
+    }
+    [pscustomobject]@{
+      Type = 'lnk'; Path = $Path; Target = $lnk.TargetPath; Arguments = $lnk.Arguments
+      WorkingDir = $lnk.WorkingDirectory; IconPath = $iconPath; IconIndex = $iconIndex
+      Description = $lnk.Description; Hotkey = $lnk.Hotkey
+    }
+  } catch { $null }
+}
+
+function Parse-UrlShortcut($Path) {
+  try { $content = Get-Content -LiteralPath $Path -ErrorAction Stop } catch { return $null }
+  $props = @{}
+  foreach ($line in $content) {
+    if ($line -match '^\s*([^;].*?)\s*=\s*(.*)\s*$') { $props[$matches[1]] = $matches[2] }
   }
-  
-  return $result
+  [pscustomobject]@{ Type = 'url'; Path = $Path; URL = $props['URL']; IconFile = $props['IconFile'] }
 }
 
-# Process all apps
-$apps | ForEach-Object {
-  $result = Process-App $_
-  
-  @"
-Name:            $($result.Name)
-Path:            $($result.Path)
-UninstallString: $($result.Uninstall)
-IconPath:        $($result.Icon)
-
-"@
+function Get-StartMenuParsed {
+  $dirs = @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:AppData\Microsoft\Windows\Start Menu\Programs")
+  Get-ChildItem -LiteralPath $dirs -Recurse -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in '.lnk','.url' } |
+    ForEach-Object {
+      if ($_.Extension -eq '.lnk') { Parse-LnkShortcut $_.FullName }
+      elseif ($_.Extension -eq '.url') { Parse-UrlShortcut $_.FullName }
+    } | Where-Object { $_ }
 }
+
+function Get-StartAppsMap {
+  $map = @{}
+  try {
+    Get-StartApps | ForEach-Object { $map[$_.Name] = $_.AppID; $map[$_.AppID] = $_.AppID }
+  } catch { }
+  return $map
+}
+
+function Expand-EnvPath($Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+  [System.Environment]::ExpandEnvironmentVariables($Path)
+}
+
+function Resolve-IconPath($Primary, $Fallback) {
+  $Primary = Expand-EnvPath $Primary
+  $Fallback = Expand-EnvPath $Fallback
+  if ($Primary -and (Test-Path $Primary)) { return $Primary }
+  if ($Fallback -and (Test-Path $Fallback)) { return $Fallback }
+  if ($Primary) { return $Primary }
+  return $Fallback
+}
+
+function Normalize-DesktopId($Name, $ExePath, $Aumid) {
+  if ($Aumid) { return $Aumid }
+  if ($ExePath) {
+    $file = [IO.Path]::GetFileNameWithoutExtension($ExePath)
+    $vendor = ([IO.Path]::GetDirectoryName($ExePath) -split '[\\/]' | Select-Object -Last 2) -join '.'
+    return ($vendor + '.' + $file).ToLowerInvariant()
+  }
+  if ($Name) { return ($Name -replace '[^\w\.]+','-').ToLowerInvariant() }
+  [Guid]::NewGuid().Guid
+}
+
+function Make-UrlId($Url) {
+  if (-not $Url) { return [Guid]::NewGuid().Guid }
+  try {
+    $u = [Uri]$Url
+    if ($u.Scheme -in @('http','https')) {
+      $seg = ($u.AbsolutePath.Trim('/').Split('/') | Where-Object { $_ } | Select-Object -First 1)
+      if ($seg -match '^\d+$') { return ($u.Host.Split('.')[-2] + '-' + $seg).ToLowerInvariant() }
+      return ($u.Host.Split('.')[-2] + '-' + ($seg -replace '[^\w]+','-')).ToLowerInvariant()
+    }
+    return (($u.OriginalString -replace '[:/\\?&=#]+','-').Trim('-')).ToLowerInvariant()
+  } catch {
+    return ($Url -replace '[:/\\?&=#]+','-').ToLowerInvariant()
+  }
+}
+
+function Find-SystemExe($FileName) {
+  if ([string]::IsNullOrWhiteSpace($FileName)) { return $null }
+  foreach ($path in @("C:\Windows\System32", "C:\Windows\SysWOW64", "$env:SystemRoot\System32", "$env:SystemRoot\SysWOW64")) {
+    $fullPath = Join-Path $path $FileName
+    if (Test-Path $fullPath) { return $fullPath }
+  }
+  return $null
+}
+
+function Resolve-DesktopAppIcon($Name, $AppId, $ParsingPath, $Link, $LnkMatch) {
+  $targetExe = $null; $iconPath = $null
+
+  if ($Link) { try { $iconIndex = 0; $iconPath = $Link.GetIconLocation([ref]$iconIndex) } catch { } }
+  if ($LnkMatch) {
+    if (-not $targetExe) { $targetExe = $LnkMatch.Target }
+    if (-not $iconPath -and $LnkMatch.IconPath) { $iconPath = $LnkMatch.IconPath }
+    if (-not $iconPath -and $LnkMatch.Target) { $iconPath = $LnkMatch.Target }
+  }
+  if (-not $targetExe -and $ParsingPath -and (Test-Path $ParsingPath)) { $targetExe = $ParsingPath }
+
+  $id = Normalize-DesktopId $Name $targetExe $AppId
+
+  if (-not $targetExe -and -not $iconPath -and $id -match '\\([^\\]+\.(exe|msc|chm|dll))$') {
+    $foundPath = Find-SystemExe $matches[1]
+    if ($foundPath) { $targetExe = $foundPath; $iconPath = $foundPath }
+  }
+
+  return @{ Id = $id; Icon = (Resolve-IconPath $iconPath $targetExe); Location = $targetExe }
+}
+
+# Skip items whose location ends with unwanted extensions (case-insensitive)
+function Should-SkipByExtension([string]$Location) {
+  if (-not $Location) { return $false }
+  $loc = $Location.ToLowerInvariant()
+  return $loc -match '\.(chm|txt|url|html)$'
+}
+
+# Skip items whose display name indicates uninstallers
+function Should-SkipByName([string]$Name) {
+  if (-not $Name) { return $false }
+  $n = $Name.ToLowerInvariant()
+  return $n -match 'uninstall'
+}
+
+# Main execution
+$startParsed = Get-StartMenuParsed
+$startAppsMap = Get-StartAppsMap
+$lnkByName = @{}; $urls = @()
+foreach ($item in $startParsed) {
+  if ($item.Type -eq 'lnk') { $lnkByName[[IO.Path]::GetFileNameWithoutExtension($item.Path)] = $item }
+  elseif ($item.Type -eq 'url') { $urls += $item }
+}
+
+$shell = New-Object -ComObject Shell.Application
+$folder = $shell.NameSpace('shell:::{4234d49b-0245-4df3-b780-3893943456e1}')
+$appItems = @($folder.Items())
+$result = New-Object System.Collections.Generic.List[object]
+
+# Build caches to avoid repeated expensive calls
+$pkgByPFM = @{}
+$pkgByName = @{}
+try {
+  $allPkgs = Get-AppxPackage -ErrorAction SilentlyContinue
+  foreach ($p in $allPkgs) { $pkgByPFM[$p.PackageFamilyName] = $p; $pkgByName[$p.Name] = $p }
+} catch {}
+try {
+  $allPkgsAllUsers = Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+  foreach ($p in $allPkgsAllUsers) { if (-not $pkgByPFM.ContainsKey($p.PackageFamilyName)) { $pkgByPFM[$p.PackageFamilyName] = $p }; if (-not $pkgByName.ContainsKey($p.Name)) { $pkgByName[$p.Name] = $p } }
+} catch {}
+
+$uwpIconCache = @{}
+function Get-UwpIconsCached($pkgName) {
+  if ([string]::IsNullOrWhiteSpace($pkgName)) { return @() }
+  if ($uwpIconCache.ContainsKey($pkgName)) { return $uwpIconCache[$pkgName] }
+  try { $icons = Get-UwpAppIcons $pkgName } catch { $icons = @() }
+  $uwpIconCache[$pkgName] = $icons
+  return $icons
+}
+
+# Resolve system default browser icon
+# Default browser icon helpers removed per requirements
+
+foreach ($it in $appItems) {
+  $name = $it.Name
+  $parsingPath = $it.Path
+  $link = try { $it.GetLink() } catch { $null }
+
+  if (Should-SkipByName $name) { continue }
+
+  $appId = $null
+  if ($startAppsMap.ContainsKey($name)) { $appId = $startAppsMap[$name] }
+  elseif ($startAppsMap.ContainsKey($parsingPath)) { $appId = $startAppsMap[$parsingPath] }
+
+  $isUwp = ($appId -and $appId -match '.+!.+') -or ($parsingPath -like 'shell:AppsFolder\*!*')
+  $urlMatch = $urls | Where-Object { [IO.Path]::GetFileNameWithoutExtension($_.Path) -eq $name } | Select-Object -First 1
+  $isUrl = $null -ne $urlMatch
+
+  $type = 'desktop'; $id = $null; $iconPath = $null; $location = $null
+
+  if ($isUwp) {
+    $type = 'uwp'
+    $aumid = $appId
+    if (-not $aumid -and $parsingPath -like 'shell:AppsFolder\*!*') {
+      $aumid = $parsingPath.Replace('shell:AppsFolder\','')
+    }
+
+    if ($aumid) {
+      $pfm = ($aumid -split '!')[0]
+      $pkg = if ($pkgByPFM.ContainsKey($pfm)) { $pkgByPFM[$pfm] } else { $null }
+
+      if ($pkg) {
+        $icons = Get-UwpIconsCached $pkg.Name
+        $match = $icons | Where-Object { $_.AUMID -eq $aumid } | Select-Object -First 1
+        if ($match -and $match.IconPath) { $iconPath = $match.IconPath }
+        $id = $pkg.Name
+      } else { $id = $aumid }
+      
+      $location = $aumid
+    } else { $id = $parsingPath; $location = $parsingPath }
+  }
+  elseif ($isUrl) {
+    $type = 'url'
+    $id = Make-UrlId $urlMatch.URL
+    $location = $urlMatch.URL
+    $iconPath = $urlMatch.IconFile
+  }
+  else {
+    $resolved = Resolve-DesktopAppIcon $name $appId $parsingPath $link $lnkByName[$name]
+    $id = $resolved.Id; $iconPath = $resolved.Icon; $location = $resolved.Location
+  }
+
+  if (Should-SkipByExtension $location) { continue }
+
+  $result.Add((New-JsonObject $type $id $iconPath $name $location)) | Out-Null
+}
+
+# Add URL shortcuts not in AppsFolder
+foreach ($u in $urls) {
+  $name = [IO.Path]::GetFileNameWithoutExtension($u.Path)
+  if (Should-SkipByName $name) { continue }
+  if (-not ($result | Where-Object { $_.name -eq $name })) {
+    $id = Make-UrlId $u.URL
+    $iconPath = $u.IconFile
+    $result.Add((New-JsonObject 'url' $id $iconPath $name $u.URL)) | Out-Null
+  }
+}
+
+$result | ConvertTo-Json -Depth 6 -Compress

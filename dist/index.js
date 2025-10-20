@@ -19,10 +19,12 @@ __export(exports_windows, {
 // src/windows/apps/apps.ts
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 // src/windows/apps/icon-extractor.ts
-import { access, readdir, readFile } from "node:fs/promises";
-import { basename, dirname, extname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
 import koffi2 from "koffi";
 
 // src/windows/apps/koffi-defs.ts
@@ -98,6 +100,15 @@ var GetObject = gdi32.func("GetObjectW", "int", ["void*", "int", koffi.out(koffi
 var SHGFI_ICON = 256;
 var SHGFI_SMALLICON = 1;
 var DIB_RGB_COLORS = 0;
+var ShellExecuteW = shell32.func("ShellExecuteW", "uintptr_t", [
+  "void*",
+  koffi.pointer("uint16"),
+  koffi.pointer("uint16"),
+  koffi.pointer("uint16"),
+  koffi.pointer("uint16"),
+  "int"
+]);
+var SW_SHOW = 5;
 
 // src/windows/apps/icon-extractor.ts
 var runAsync = (fn) => {
@@ -111,16 +122,7 @@ var runAsync = (fn) => {
     });
   });
 };
-var fileExists = async (path) => {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-};
-var PREFERRED_SCALES = [32, 48, 64, 96, 100, 125, 150, 200, 400];
-var IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".svg"];
+var IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".svg", ".ico"];
 var EXECUTABLE_EXTENSIONS = [".exe", ".dll", ".cpl", ".ocx", ".scr"];
 var MIME_TYPES = {
   ".png": "image/png",
@@ -139,14 +141,6 @@ var toWide = (s) => {
   return arr;
 };
 var getMime = (ext) => MIME_TYPES[ext.toLowerCase()] || "image/png";
-var getPatterns = (base, ext, scale) => [
-  `${base}.scale-${scale}${ext}`,
-  `${base}.targetsize-${scale}${ext}`,
-  `${base}.contrast-standard_scale-${scale}${ext}`,
-  `${base}.${scale}${ext}`,
-  `${base}_${scale}${ext}`,
-  `${base}-${scale}${ext}`
-];
 async function iconToBase64(hIcon) {
   if (!hIcon || hIcon === 0)
     return null;
@@ -238,21 +232,58 @@ async function iconToBase64(hIcon) {
     return null;
   }
 }
-async function extractIconWithKoffi(filePath) {
+async function extractEmbeddedIcon(filePath, index = 0) {
   try {
     const wideFilePath = toWide(filePath);
     const largeIconPtr = [0];
     const smallIconPtr = [0];
-    const count = await runAsync(() => ExtractIconExW(wideFilePath, 0, largeIconPtr, smallIconPtr, 1));
-    if (count > 0 && smallIconPtr[0]) {
-      const iconData = await iconToBase64(smallIconPtr[0]);
-      if (iconData)
-        return iconData;
+    const count = await runAsync(() => ExtractIconExW(wideFilePath, index, largeIconPtr, smallIconPtr, 1));
+    if (count > 0) {
+      if (smallIconPtr[0]) {
+        const small = await iconToBase64(smallIconPtr[0]);
+        if (small)
+          return small;
+      }
+      if (largeIconPtr[0]) {
+        const large = await iconToBase64(largeIconPtr[0]);
+        if (large)
+          return large;
+      }
     }
-    if (count > 0 && largeIconPtr[0]) {
-      const iconData = await iconToBase64(largeIconPtr[0]);
-      if (iconData)
-        return iconData;
+    if (index < 0) {
+      const absIndex = Math.abs(index);
+      const large2 = [0];
+      const small2 = [0];
+      const count2 = await runAsync(() => ExtractIconExW(wideFilePath, absIndex, large2, small2, 1));
+      if (count2 > 0) {
+        if (small2[0]) {
+          const small = await iconToBase64(small2[0]);
+          if (small)
+            return small;
+        }
+        if (large2[0]) {
+          const large = await iconToBase64(large2[0]);
+          if (large)
+            return large;
+        }
+      }
+    }
+    for (let i = 0;i < 8; i++) {
+      const large3 = [0];
+      const small3 = [0];
+      const count3 = await runAsync(() => ExtractIconExW(wideFilePath, i, large3, small3, 1));
+      if (count3 > 0) {
+        if (small3[0]) {
+          const small = await iconToBase64(small3[0]);
+          if (small)
+            return small;
+        }
+        if (large3[0]) {
+          const large = await iconToBase64(large3[0]);
+          if (large)
+            return large;
+        }
+      }
     }
     const fileInfo = {};
     const wideFilePathForShell = toWide(filePath);
@@ -265,94 +296,10 @@ async function extractIconWithKoffi(filePath) {
     return null;
   }
 }
-async function resolveAppxIconPathDirect(iconPath) {
-  try {
-    if (await fileExists(iconPath))
-      return iconPath;
-    const dir = dirname(iconPath);
-    const baseNameWithoutExt = basename(iconPath, extname(iconPath));
-    const ext = extname(iconPath);
-    if (!await fileExists(dir))
-      return null;
-    let files;
-    try {
-      files = await readdir(dir);
-    } catch {
-      for (const scale of PREFERRED_SCALES.slice(0, 5)) {
-        for (const pattern of getPatterns(baseNameWithoutExt, ext, scale).slice(0, 3)) {
-          const testPath = join(dir, pattern);
-          if (await fileExists(testPath))
-            return testPath;
-        }
-      }
-      return null;
-    }
-    for (const scale of PREFERRED_SCALES) {
-      for (const pattern of getPatterns(baseNameWithoutExt, ext, scale)) {
-        if (files.includes(pattern))
-          return join(dir, pattern);
-      }
-    }
-    const matchingFile = files.find((f) => f.startsWith(baseNameWithoutExt) && f.endsWith(ext));
-    return matchingFile ? join(dir, matchingFile) : null;
-  } catch {
-    return null;
-  }
-}
-async function resolveAppxIconPath(iconPath) {
-  if (iconPath.includes("WindowsApps")) {
-    return await resolveAppxIconPathDirect(iconPath);
-  }
-  try {
-    if (await fileExists(iconPath)) {
-      return iconPath;
-    }
-    const dir = dirname(iconPath);
-    const baseNameWithoutExt = basename(iconPath, extname(iconPath));
-    const ext = extname(iconPath);
-    if (!await fileExists(dir)) {
-      return null;
-    }
-    let files;
-    try {
-      files = await readdir(dir);
-    } catch {
-      for (const scale of PREFERRED_SCALES.slice(0, 5)) {
-        for (const pattern of getPatterns(baseNameWithoutExt, ext, scale).slice(0, 3)) {
-          const testPath = join(dir, pattern);
-          if (await fileExists(testPath)) {
-            return testPath;
-          }
-        }
-      }
-      return null;
-    }
-    for (const scale of PREFERRED_SCALES) {
-      for (const pattern of getPatterns(baseNameWithoutExt, ext, scale)) {
-        if (files.includes(pattern)) {
-          return join(dir, pattern);
-        }
-      }
-    }
-    const matchingFile = files.find((file) => file.startsWith(baseNameWithoutExt) && file.endsWith(ext));
-    return matchingFile ? join(dir, matchingFile) : null;
-  } catch {
-    return null;
-  }
-}
-async function extractIcon(filePath) {
-  if (extname(filePath).toLowerCase() === ".ico") {
-    return null;
-  }
-  return await extractIconWithKoffi(filePath);
-}
 async function fileToBase64DataURI(filePath) {
   try {
-    const resolvedPath = await resolveAppxIconPath(filePath);
-    if (!resolvedPath)
-      return null;
-    const buffer = await readFile(resolvedPath);
-    const ext = extname(resolvedPath);
+    const buffer = await readFile(filePath);
+    const ext = extname(filePath);
     const mimeType = getMime(ext);
     const base64 = buffer.toString("base64");
     return `data:${mimeType};base64,${base64}`;
@@ -360,179 +307,42 @@ async function fileToBase64DataURI(filePath) {
     return null;
   }
 }
+function parsePathAndIndex(rawPath) {
+  const trimmed = rawPath.trim().replace(/^"|"$/g, "");
+  const idx = trimmed.lastIndexOf(",");
+  if (idx > 1 && idx < rawPath.length - 1) {
+    const path = trimmed.slice(0, idx);
+    const rest = trimmed.slice(idx + 1).trim();
+    const index = Number.parseInt(rest, 10);
+    if (!Number.isNaN(index))
+      return { path, index };
+  }
+  return { path: trimmed, index: 0 };
+}
 async function extractIconAsBase64(filePath) {
-  if (!filePath || !filePath.trim()) {
+  if (!filePath || !filePath.trim())
     return null;
-  }
-  const cleanPath = filePath.trim();
-  const ext = extname(cleanPath).toLowerCase();
-  const isWindowsApps = cleanPath.includes("WindowsApps");
-  if (!isWindowsApps && !await fileExists(cleanPath)) {
-    return null;
-  }
-  if (IMAGE_EXTENSIONS.includes(ext) || ext === ".ico") {
-    return await fileToBase64DataURI(cleanPath);
+  const { path, index } = parsePathAndIndex(filePath.trim());
+  const ext = extname(path).toLowerCase();
+  if (IMAGE_EXTENSIONS.includes(ext)) {
+    return await fileToBase64DataURI(path);
   }
   if (EXECUTABLE_EXTENSIONS.includes(ext)) {
-    return await extractIcon(cleanPath);
+    return await extractEmbeddedIcon(path, index);
   }
-  return await extractIcon(cleanPath);
+  return null;
 }
 
 // src/windows/apps/apps.ts
 var execFileAsync = promisify(execFile);
-var createAppIcon = (path, preloadedBase64) => {
-  let cachedBase64 = preloadedBase64 ?? null;
-  let loadPromise = null;
-  return {
-    path,
-    getBase64: async () => {
-      if (cachedBase64 !== null)
-        return cachedBase64;
-      if (loadPromise)
-        return loadPromise;
-      loadPromise = (async () => {
-        try {
-          if (cachedBase64 !== null)
-            return cachedBase64;
-          const base64 = await extractIconAsBase64(path);
-          cachedBase64 = base64 ?? "";
-          return cachedBase64;
-        } catch {
-          cachedBase64 = "";
-          return "";
-        } finally {
-          loadPromise = null;
-        }
-      })();
-      return loadPromise;
-    }
-  };
-};
-var hashStringToNumber = (value) => Math.abs([...value].reduce((acc, ch) => (acc << 5) - acc + ch.charCodeAt(0) | 0, 0)) || 1;
-var cleanIconPath = (path) => {
-  const raw = typeof path === "string" ? path : path == null ? "" : String(path);
-  return raw.trim().replace(/^['"]|['"]$/g, "").replace(/,\s*-?\d+$/, "");
-};
-var ps = async (script) => {
-  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
-    encoding: "utf8",
-    windowsHide: true,
-    maxBuffer: 1024 * 1024 * 64
-  });
-  return stdout.trim();
-};
-var buildScript = () => String.raw`
-$ErrorActionPreference="SilentlyContinue"
-
-function ReadLnk($p){
-  try{
-    $sh=New-Object -ComObject WScript.Shell
-    $lnk=$sh.CreateShortcut($p)
-    $iconLoc=$lnk.IconLocation
-    $icon=if($iconLoc){$iconLoc}else{$null}
-    @{ Icon=$icon; Target=$lnk.TargetPath }
-  }catch{ @{ Icon=$null; Target=$null } }
-}
-
-function ReadUrl($p){
-  try{
-    $lines=Get-Content $p -ErrorAction Stop
-    $icon=($lines | Where-Object { $_ -like "IconFile=*" } | Select-Object -First 1) -replace "IconFile=",""
-    $target=($lines | Where-Object { $_ -like "URL=*" } | Select-Object -First 1) -replace "URL=",""
-    @{ Icon=$icon; Target=$target }
-  }catch{ @{ Icon=$null; Target=$null } }
-}
-
-function Appx(){
-  Get-AppxPackage | ForEach-Object {
-    $manifest=$null
-    try{ $manifest=Get-AppxPackageManifest -Package $_ -ErrorAction Stop }catch{}
-    $logo=$null
-    if($manifest){
-      $logos=@(
-        $manifest.Package.Applications.Application.VisualElements.Square44x44Logo,
-        $manifest.Package.Applications.Application.VisualElements.Square150x150Logo,
-        $manifest.Package.Applications.Application.VisualElements.Square71x71Logo,
-        $manifest.Package.Applications.Application.VisualElements.Square30x30Logo
-      ) | Where-Object { $_ -and $_ -ne "" }
-      if($logos){
-        foreach($l in $logos){
-          $relativePath=($l -split " ")[0]
-          if($relativePath){
-            $testPath=Join-Path $_.InstallLocation $relativePath
-            if($testPath -and (Test-Path $testPath -ErrorAction SilentlyContinue)){
-              $logo=$testPath
-              break
-            }
-          }
-        }
-        # Fallback: use first logo even if file doesn't exist (icon resolver will handle variants)
-        if(-not $logo -and $logos[0]){
-          $relativePath=($logos[0] -split " ")[0]
-          if($relativePath){
-            $logo=Join-Path $_.InstallLocation $relativePath
-          }
-        }
-      }
-    }
-    $publisher=$_.Publisher
-    if($manifest -and $manifest.Package.PublisherDisplayName){ $publisher=$manifest.Package.PublisherDisplayName }
-    $name=$_.Name
-    if($manifest -and $manifest.Package.Properties.DisplayName){ $name=$manifest.Package.Properties.DisplayName }
-    [pscustomobject]@{
-      name=$name
-      version=$_.Version.ToString()
-      publisher=$publisher
-      iconPath=$logo
-      uninstallCmd="powershell -Command Remove-AppxPackage '"+$_.PackageFullName+"'"
-      description=if($manifest){$manifest.Package.Properties.Description}else{$null}
-      location=$_.InstallLocation
-      source="Appx"
-    }
-  }
-}
-
-function StartMenu(){
-  $roots=@(
-    "$Env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs",
-    "$Env:AppData\\Microsoft\\Windows\\Start Menu\\Programs",
-    "$Env:ALLUSERSPROFILE\\Microsoft\\Windows\\Start Menu\\Programs",
-    "$Env:USERPROFILE\\Start Menu\\Programs",
-    "$Env:Public\\Desktop",
-    "$Env:UserProfile\\Desktop"
-  ) | Where-Object { Test-Path $_ }
-
-  foreach($root in $roots){
-    Get-ChildItem $root -Recurse -Include *.lnk,*.url -ErrorAction SilentlyContinue | ForEach-Object {
-      $info = if($_.Extension -ieq ".lnk"){ ReadLnk $_.FullName } elseif($_.Extension -ieq ".url"){ ReadUrl $_.FullName } else { $null }
-      if($info -and $info.Target){
-        $icon=$info.Icon
-        if([string]::IsNullOrWhiteSpace($icon)){ $icon=$info.Target }
-        if($icon){ $icon=[System.Environment]::ExpandEnvironmentVariables($icon) }
-        [pscustomobject]@{
-          name=$_.BaseName
-          version=$null
-          publisher=$null
-          iconPath=$icon
-          uninstallCmd=$null
-          description=$_.FullName
-          location=$info.Target
-          source="StartMenu"
-        }
-      }
-    }
-  }
-}
-
-$result = @(Appx) + @(StartMenu)
-$result | Where-Object { $_.name } | Sort-Object name -Unique | ConvertTo-Json -Depth 6
-`;
-var parseAppsFromPowerShell = async () => {
+var runFetchAppsScript = async () => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const scriptPath = join(thisDir, "fetch-apps.ps1");
+  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 });
+  const raw = stdout.trim();
+  if (!raw)
+    return [];
   try {
-    const raw = await ps(buildScript());
-    if (!raw)
-      return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
   } catch {
@@ -541,39 +351,31 @@ var parseAppsFromPowerShell = async () => {
 };
 
 class WindowsAppRegistry {
-  apps = [];
-  async getApps() {
-    if (this.apps.length > 0)
-      return this.apps;
-    const apps = await parseAppsFromPowerShell();
-    this.apps = apps.filter((app) => {
-      const hasResourceName = app.name?.startsWith("ms-resource:");
-      const hasResourceIcon = app.iconPath?.startsWith("ms-resource:");
-      return !hasResourceName && !hasResourceIcon;
-    }).map((app) => {
-      const iconPath = cleanIconPath(app.iconPath) || undefined;
-      const idSeed = `${app.source}|${app.name}|${app.version ?? ""}|${app.publisher ?? ""}|${iconPath ?? ""}`;
-      return {
-        id: hashStringToNumber(idSeed),
-        name: app.name || "",
-        version: app.version ?? "",
-        publisher: app.publisher ?? "",
-        icon: iconPath ? createAppIcon(iconPath) : undefined,
-        location: app.location || undefined,
-        uninstaller: app.uninstallCmd || undefined,
-        installDate: undefined
-      };
-    });
-    return this.apps;
-  }
-  listApps() {
-    return this.apps;
-  }
-  getApp(id) {
-    return this.apps.find((app) => app.id === id) || null;
-  }
-  uninstallApp(_id) {
-    return false;
+  async fetchApps() {
+    const apps = await runFetchAppsScript();
+    return apps.map((app) => ({
+      id: app.id,
+      name: app.name,
+      type: app.type,
+      icon: {
+        path: app.icon,
+        getBase64: async () => await extractIconAsBase64(app.icon) ?? ""
+      },
+      launch: () => {
+        if (app.type === "uwp") {
+          execFileAsync("powershell.exe", [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            `Start-Process "shell:AppsFolder\\${app.launch}"`
+          ], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 });
+        } else {
+          const wide = Buffer.from(`${app.launch}\x00`, "utf16le");
+          ShellExecuteW(null, null, wide, null, null, SW_SHOW);
+        }
+      }
+    }));
   }
 }
 

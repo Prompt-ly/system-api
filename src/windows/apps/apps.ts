@@ -1,182 +1,35 @@
-import type { App, AppIcon, AppRegistry } from "@/modules/apps";
+import type { App, AppRegistry } from "@/modules/apps";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { extractIconAsBase64 } from "./icon-extractor";
 import { ShellExecuteW, SW_SHOW } from "./koffi-defs";
 
 const execFileAsync = promisify(execFile);
 
-const createAppIcon = (path: string, preloadedBase64?: string | null): AppIcon => {
-  let cachedBase64 = preloadedBase64 ?? null;
-  let loadPromise: Promise<string> | null = null;
-
-  return {
-    path,
-    getBase64: async () => {
-      if (cachedBase64 !== null) return cachedBase64;
-      if (loadPromise) return loadPromise;
-
-      loadPromise = (async () => {
-        try {
-          if (cachedBase64 !== null) return cachedBase64;
-          const base64 = await extractIconAsBase64(path);
-          cachedBase64 = base64 ?? "";
-          return cachedBase64;
-        } catch {
-          cachedBase64 = "";
-          return "";
-        } finally {
-          loadPromise = null;
-        }
-      })();
-
-      return loadPromise;
-    }
-  };
-};
-
-const hashStringToNumber = (value: string): number =>
-  Math.abs([...value].reduce((acc, ch) => ((acc << 5) - acc + ch.charCodeAt(0)) | 0, 0)) || 1;
-
-const cleanIconPath = (path?: string | null) => {
-  const raw = typeof path === "string" ? path : path == null ? "" : String(path);
-  return raw
-    .trim()
-    .replace(/^['"]|['"]$/g, "")
-    .replace(/,\s*-?\d+$/, "");
-};
-
-const ps = async (script: string): Promise<string> => {
-  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
-    encoding: "utf8",
-    windowsHide: true,
-    maxBuffer: 1024 * 1024 * 64
-  });
-  return stdout.trim();
-};
-
-const buildScript = () => String.raw`
-$ErrorActionPreference="SilentlyContinue"
-
-function ReadLnk($p){
-  try{
-    $sh=New-Object -ComObject WScript.Shell
-    $lnk=$sh.CreateShortcut($p)
-    $iconLoc=$lnk.IconLocation
-    $icon=if($iconLoc){$iconLoc}else{$null}
-    @{ Icon=$icon; Target=$lnk.TargetPath }
-  }catch{ @{ Icon=$null; Target=$null } }
-}
-
-function ReadUrl($p){
-  try{
-    $lines=Get-Content $p -ErrorAction Stop
-    $icon=($lines | Where-Object { $_ -like "IconFile=*" } | Select-Object -First 1) -replace "IconFile=",""
-    $target=($lines | Where-Object { $_ -like "URL=*" } | Select-Object -First 1) -replace "URL=",""
-    @{ Icon=$icon; Target=$target }
-  }catch{ @{ Icon=$null; Target=$null } }
-}
-
-function Appx(){
-  Get-AppxPackage | ForEach-Object {
-    $manifest=$null
-    try{ $manifest=Get-AppxPackageManifest -Package $_ -ErrorAction Stop }catch{}
-    $logo=$null
-    if($manifest){
-      $logos=@(
-        $manifest.Package.Applications.Application.VisualElements.Square44x44Logo,
-        $manifest.Package.Applications.Application.VisualElements.Square150x150Logo,
-        $manifest.Package.Applications.Application.VisualElements.Square71x71Logo,
-        $manifest.Package.Applications.Application.VisualElements.Square30x30Logo
-      ) | Where-Object { $_ -and $_ -ne "" }
-      if($logos){
-        foreach($l in $logos){
-          $relativePath=($l -split " ")[0]
-          if($relativePath){
-            $testPath=Join-Path $_.InstallLocation $relativePath
-            if($testPath -and (Test-Path $testPath -ErrorAction SilentlyContinue)){
-              $logo=$testPath
-              break
-            }
-          }
-        }
-        # Fallback: use first logo even if file doesn't exist (icon resolver will handle variants)
-        if(-not $logo -and $logos[0]){
-          $relativePath=($logos[0] -split " ")[0]
-          if($relativePath){
-            $logo=Join-Path $_.InstallLocation $relativePath
-          }
-        }
-      }
-    }
-    $publisher=$_.Publisher
-    if($manifest -and $manifest.Package.PublisherDisplayName){ $publisher=$manifest.Package.PublisherDisplayName }
-    $name=$_.Name
-    if($manifest -and $manifest.Package.Properties.DisplayName){ $name=$manifest.Package.Properties.DisplayName }
-    [pscustomobject]@{
-      name=$name
-      version=$_.Version.ToString()
-      publisher=$publisher
-      iconPath=$logo
-      uninstallCmd="powershell -Command Remove-AppxPackage '"+$_.PackageFullName+"'"
-      description=if($manifest){$manifest.Package.Properties.Description}else{$null}
-      location=$_.InstallLocation
-      source="Appx"
-    }
-  }
-}
-
-function StartMenu(){
-  $roots=@(
-    "$Env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs",
-    "$Env:AppData\\Microsoft\\Windows\\Start Menu\\Programs",
-    "$Env:ALLUSERSPROFILE\\Microsoft\\Windows\\Start Menu\\Programs",
-    "$Env:USERPROFILE\\Start Menu\\Programs",
-    "$Env:Public\\Desktop",
-    "$Env:UserProfile\\Desktop"
-  ) | Where-Object { Test-Path $_ }
-
-  foreach($root in $roots){
-    Get-ChildItem $root -Recurse -Include *.lnk,*.url -ErrorAction SilentlyContinue | ForEach-Object {
-      $info = if($_.Extension -ieq ".lnk"){ ReadLnk $_.FullName } elseif($_.Extension -ieq ".url"){ ReadUrl $_.FullName } else { $null }
-      if($info -and $info.Target){
-        $icon=$info.Icon
-        if([string]::IsNullOrWhiteSpace($icon)){ $icon=$info.Target }
-        if($icon){ $icon=[System.Environment]::ExpandEnvironmentVariables($icon) }
-        [pscustomobject]@{
-          name=$_.BaseName
-          version=$null
-          publisher=$null
-          iconPath=$icon
-          uninstallCmd=$null
-          description=$_.FullName
-          location=$info.Target
-          source="StartMenu"
-        }
-      }
-    }
-  }
-}
-
-$result = @(Appx) + @(StartMenu)
-$result | Where-Object { $_.name } | Sort-Object name -Unique | ConvertTo-Json -Depth 6
-`;
-
 type PSApp = {
+  id: string;
   name: string;
-  version?: string;
-  publisher?: string;
-  iconPath?: string;
-  uninstallCmd?: string;
-  description?: string;
-  location?: string;
-  source: "Appx" | "StartMenu";
+  type: "desktop" | "uwp" | "url";
+  icon: string;
+  launch: string;
 };
 
-const parseAppsFromPowerShell = async (): Promise<PSApp[]> => {
+const runFetchAppsScript = async (): Promise<PSApp[]> => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const scriptPath = join(thisDir, "fetch-apps.ps1");
+
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+    { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 }
+  );
+
+  const raw = stdout.trim();
+  if (!raw) return [];
+  
   try {
-    const raw = await ps(buildScript());
-    if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as PSApp[]) : parsed ? [parsed as PSApp] : [];
   } catch {
@@ -185,54 +38,30 @@ const parseAppsFromPowerShell = async (): Promise<PSApp[]> => {
 };
 
 export class WindowsAppRegistry implements AppRegistry {
-  private apps: App[] = [];
+  async fetchApps(): Promise<App[]> {
+    const apps = await runFetchAppsScript();
 
-  async getApps() {
-    if (this.apps.length > 0) return this.apps;
-    const apps = await parseAppsFromPowerShell();
-
-    this.apps = apps
-      .filter((app) => {
-        // Skip apps with ms-resource: paths as they require slow resource resolution
-        const hasResourceName = app.name?.startsWith("ms-resource:");
-        const hasResourceIcon = app.iconPath?.startsWith("ms-resource:");
-        return !hasResourceName && !hasResourceIcon;
-      })
-      .map((app) => {
-        const iconPath = cleanIconPath(app.iconPath) || undefined;
-        const idSeed = `${app.source}|${app.name}|${app.version ?? ""}|${app.publisher ?? ""}|${iconPath ?? ""}`;
-
-        return {
-          id: hashStringToNumber(idSeed),
-          name: app.name || "",
-          version: app.version ?? "",
-          publisher: app.publisher ?? "",
-          icon: iconPath ? createAppIcon(iconPath) : undefined,
-          location: app.location || undefined,
-          uninstaller: app.uninstallCmd || undefined,
-          installDate: undefined,
-          open: () => {
-            if (app.location) {
-              const location = Buffer.from(`${app.location}\0`, "utf16le");
-              ShellExecuteW(null, null, location, null, null, SW_SHOW);
-            }
-          }
-        } as App;
-      });
-
-    return this.apps;
-  }
-
-  listApps(): App[] {
-    return this.apps;
-  }
-
-  getApp(id: number): App | null {
-    return this.apps.find((app) => app.id === id) || null;
-  }
-
-  uninstallApp(_id: number): boolean {
-    // TODO: Implement uninstaller
-    return false;
+    return apps.map(app => ({
+      id: app.id,
+      name: app.name,
+      type: app.type,
+      icon: {
+        path: app.icon,
+        getBase64: async () => (await extractIconAsBase64(app.icon)) ?? ""
+      },
+      launch: () => {
+        if (app.type === "uwp") {
+          execFileAsync("powershell.exe", [
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-Command",
+            `Start-Process "shell:AppsFolder\\${app.launch}"`
+          ], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 });
+        } else {
+          const wide = Buffer.from(`${app.launch}\0`, "utf16le");
+          ShellExecuteW(null, null, wide, null, null, SW_SHOW);
+        }
+      }
+    }));
   }
 }

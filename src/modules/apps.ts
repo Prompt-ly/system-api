@@ -1,22 +1,14 @@
 export interface App {
-  id: number;
+  id: string;
   name: string;
-  version: string;
-  publisher: string;
-  icon?: AppIcon;
-  location?: string;
-  uninstaller?: string;
-  installDate?: Date;
-  open: () => void;
+  type: "desktop" | "uwp" | "url";
+  icon: {
+    path: string;
+    getBase64: () => Promise<string>;
+  }
+  launch: () => void;
 }
 
-export type AppIcon = {
-  path: string;
-  getBase64: () => Promise<string>;
-};
-
 export interface AppRegistry {
-  getApps(refresh?: boolean): Promise<App[]>;
-  getApp(id: number): App | null;
-  uninstallApp(id: number): boolean;
+  fetchApps(): Promise<App[]>;
 }

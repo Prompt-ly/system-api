@@ -1,5 +1,5 @@
-import { access, readdir, readFile } from "node:fs/promises";
-import { basename, dirname, extname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
 import koffi from "koffi";
 import {
   BITMAP,
@@ -32,18 +32,7 @@ const runAsync = <T>(fn: () => T): Promise<T> => {
   });
 };
 
-// Helper to check if file exists
-const fileExists = async (path: string): Promise<boolean> => {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const PREFERRED_SCALES = [32, 48, 64, 96, 100, 125, 150, 200, 400];
-const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".svg"];
+const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".svg", ".ico"];
 const EXECUTABLE_EXTENSIONS = [".exe", ".dll", ".cpl", ".ocx", ".scr"];
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -194,24 +183,60 @@ async function iconToBase64(hIcon: unknown): Promise<string | null> {
   }
 }
 
-async function extractIconWithKoffi(filePath: string): Promise<string | null> {
+async function extractEmbeddedIcon(filePath: string, index: number = 0): Promise<string | null> {
   try {
     const wideFilePath = toWide(filePath);
     const largeIconPtr = [0];
     const smallIconPtr = [0];
 
-    const count = await runAsync(() => ExtractIconExW(wideFilePath, 0, largeIconPtr, smallIconPtr, 1));
-
-    if (count > 0 && smallIconPtr[0]) {
-      const iconData = await iconToBase64(smallIconPtr[0]);
-      if (iconData) return iconData;
+    const count = await runAsync(() => ExtractIconExW(wideFilePath, index, largeIconPtr, smallIconPtr, 1));
+    if (count > 0) {
+      if (smallIconPtr[0]) {
+        const small = await iconToBase64(smallIconPtr[0]);
+        if (small) return small;
+      }
+      if (largeIconPtr[0]) {
+        const large = await iconToBase64(largeIconPtr[0]);
+        if (large) return large;
+      }
     }
 
-    if (count > 0 && largeIconPtr[0]) {
-      const iconData = await iconToBase64(largeIconPtr[0]);
-      if (iconData) return iconData;
+    // If negative resource id was provided, try absolute value as index
+    if (index < 0) {
+      const absIndex = Math.abs(index);
+      const large2 = [0];
+      const small2 = [0];
+      const count2 = await runAsync(() => ExtractIconExW(wideFilePath, absIndex, large2, small2, 1));
+      if (count2 > 0) {
+        if (small2[0]) {
+          const small = await iconToBase64(small2[0]);
+          if (small) return small;
+        }
+        if (large2[0]) {
+          const large = await iconToBase64(large2[0]);
+          if (large) return large;
+        }
+      }
     }
 
+    // Probe a small range of indices to find a valid icon
+    for (let i = 0; i < 8; i++) {
+      const large3 = [0];
+      const small3 = [0];
+      const count3 = await runAsync(() => ExtractIconExW(wideFilePath, i, large3, small3, 1));
+      if (count3 > 0) {
+        if (small3[0]) {
+          const small = await iconToBase64(small3[0]);
+          if (small) return small;
+        }
+        if (large3[0]) {
+          const large = await iconToBase64(large3[0]);
+          if (large) return large;
+        }
+      }
+    }
+
+    // Fallback to SHGetFileInfoW default icon
     const fileInfo = {} as {
       hIcon: unknown;
       iIcon: number;
@@ -223,116 +248,19 @@ async function extractIconWithKoffi(filePath: string): Promise<string | null> {
     const result = await runAsync(() =>
       SHGetFileInfoW(wideFilePathForShell, 0, fileInfo, koffi.sizeof(SHFILEINFOW), SHGFI_ICON | SHGFI_SMALLICON)
     );
-
     if (result && fileInfo.hIcon) {
       return await iconToBase64(fileInfo.hIcon);
     }
-
     return null;
   } catch {
     return null;
   }
-}
-
-async function resolveAppxIconPathDirect(iconPath: string): Promise<string | null> {
-  try {
-    if (await fileExists(iconPath)) return iconPath;
-
-    const dir = dirname(iconPath);
-    const baseNameWithoutExt = basename(iconPath, extname(iconPath));
-    const ext = extname(iconPath);
-
-    if (!(await fileExists(dir))) return null;
-
-    let files: string[];
-    try {
-      files = await readdir(dir);
-    } catch {
-      for (const scale of PREFERRED_SCALES.slice(0, 5)) {
-        for (const pattern of getPatterns(baseNameWithoutExt, ext, scale).slice(0, 3)) {
-          const testPath = join(dir, pattern);
-          if (await fileExists(testPath)) return testPath;
-        }
-      }
-      return null;
-    }
-
-    for (const scale of PREFERRED_SCALES) {
-      for (const pattern of getPatterns(baseNameWithoutExt, ext, scale)) {
-        if (files.includes(pattern)) return join(dir, pattern);
-      }
-    }
-
-    const matchingFile = files.find((f) => f.startsWith(baseNameWithoutExt) && f.endsWith(ext));
-    return matchingFile ? join(dir, matchingFile) : null;
-  } catch {
-    return null;
-  }
-}
-
-async function resolveAppxIconPath(iconPath: string): Promise<string | null> {
-  if (iconPath.includes("WindowsApps")) {
-    return await resolveAppxIconPathDirect(iconPath);
-  }
-
-  try {
-    if (await fileExists(iconPath)) {
-      return iconPath;
-    }
-
-    const dir = dirname(iconPath);
-    const baseNameWithoutExt = basename(iconPath, extname(iconPath));
-    const ext = extname(iconPath);
-
-    if (!(await fileExists(dir))) {
-      return null;
-    }
-
-    let files: string[];
-    try {
-      files = await readdir(dir);
-    } catch {
-      for (const scale of PREFERRED_SCALES.slice(0, 5)) {
-        for (const pattern of getPatterns(baseNameWithoutExt, ext, scale).slice(0, 3)) {
-          const testPath = join(dir, pattern);
-          if (await fileExists(testPath)) {
-            return testPath;
-          }
-        }
-      }
-      return null;
-    }
-
-    for (const scale of PREFERRED_SCALES) {
-      for (const pattern of getPatterns(baseNameWithoutExt, ext, scale)) {
-        if (files.includes(pattern)) {
-          return join(dir, pattern);
-        }
-      }
-    }
-
-    const matchingFile = files.find((file) => file.startsWith(baseNameWithoutExt) && file.endsWith(ext));
-    return matchingFile ? join(dir, matchingFile) : null;
-  } catch {
-    return null;
-  }
-}
-
-async function extractIcon(filePath: string): Promise<string | null> {
-  if (extname(filePath).toLowerCase() === ".ico") {
-    return null;
-  }
-
-  return await extractIconWithKoffi(filePath);
 }
 
 async function fileToBase64DataURI(filePath: string): Promise<string | null> {
   try {
-    const resolvedPath = await resolveAppxIconPath(filePath);
-    if (!resolvedPath) return null;
-
-    const buffer = await readFile(resolvedPath);
-    const ext = extname(resolvedPath);
+    const buffer = await readFile(filePath);
+    const ext = extname(filePath);
     const mimeType = getMime(ext);
     const base64 = buffer.toString("base64");
 
@@ -342,26 +270,31 @@ async function fileToBase64DataURI(filePath: string): Promise<string | null> {
   }
 }
 
+function parsePathAndIndex(rawPath: string): { path: string; index: number } {
+  const trimmed = rawPath.trim().replace(/^"|"$/g, "");
+  const idx = trimmed.lastIndexOf(",");
+  if (idx > 1 && idx < rawPath.length - 1) {
+    const path = trimmed.slice(0, idx);
+    const rest = trimmed.slice(idx + 1).trim();
+    const index = Number.parseInt(rest, 10);
+    if (!Number.isNaN(index)) return { path, index };
+  }
+  return { path: trimmed, index: 0 };
+}
+
 export async function extractIconAsBase64(filePath: string | undefined | null): Promise<string | null> {
-  if (!filePath || !filePath.trim()) {
-    return null;
-  }
+  if (!filePath || !filePath.trim()) return null;
 
-  const cleanPath = filePath.trim();
-  const ext = extname(cleanPath).toLowerCase();
-  const isWindowsApps = cleanPath.includes("WindowsApps");
+  const { path, index } = parsePathAndIndex(filePath.trim());
+  const ext = extname(path).toLowerCase();
 
-  if (!isWindowsApps && !(await fileExists(cleanPath))) {
-    return null;
-  }
-
-  if (IMAGE_EXTENSIONS.includes(ext) || ext === ".ico") {
-    return await fileToBase64DataURI(cleanPath);
+  if (IMAGE_EXTENSIONS.includes(ext)) {
+    return await fileToBase64DataURI(path);
   }
 
   if (EXECUTABLE_EXTENSIONS.includes(ext)) {
-    return await extractIcon(cleanPath);
+    return await extractEmbeddedIcon(path, index);
   }
 
-  return await extractIcon(cleanPath);
+  return null;
 }
