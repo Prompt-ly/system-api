@@ -500,7 +500,7 @@ class WindowsProcessManager {
 
 // src/windows/settings/settings.ts
 function launchSetting(id) {
-  const wide = Buffer.from(`${id}\x00`, "utf16le");
+  const wide = Buffer.from(`ms-settings:${id}\x00`, "utf16le");
   ShellExecuteW(null, null, wide, null, null, SW_SHOW);
 }
 

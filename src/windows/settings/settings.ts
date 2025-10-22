@@ -2,7 +2,7 @@ import type { Setting, SettingRegistry } from "@/modules/settings";
 import { ShellExecuteW, SW_SHOW } from "../apps/koffi-defs";
 
 function launchSetting(id: string): void {
-  const wide = Buffer.from(`${id}\0`, "utf16le");
+  const wide = Buffer.from(`ms-settings:${id}\0`, "utf16le");
   ShellExecuteW(null, null, wide, null, null, SW_SHOW);
 }
 
