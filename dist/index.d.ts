@@ -25,11 +25,20 @@ export interface ProcessManager {
 	getProcess(id: number): Process | null;
 	listProcesses(): Process[];
 }
+export interface Setting {
+	id: string;
+	name: string;
+	open: () => void;
+}
+export interface SettingRegistry {
+	fetchSettings(): Promise<Setting[]>;
+}
 declare const Process$1: ProcessManager;
 declare const Apps: AppRegistry;
+declare const Settings: SettingRegistry;
 
 declare namespace Windows {
-	export { Apps, Process$1 as Process };
+	export { Apps, Process$1 as Process, Settings };
 }
 
 export {
