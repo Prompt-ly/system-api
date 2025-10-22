@@ -18,10 +18,10 @@ __export(exports_windows, {
 });
 
 // src/windows/apps/apps.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
+import { execFile, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 // src/windows/apps/icon-extractor.ts
 import { readFile } from "node:fs/promises";
@@ -101,15 +101,6 @@ var GetObject = gdi32.func("GetObjectW", "int", ["void*", "int", koffi.out(koffi
 var SHGFI_ICON = 256;
 var SHGFI_SMALLICON = 1;
 var DIB_RGB_COLORS = 0;
-var ShellExecuteW = shell32.func("ShellExecuteW", "uintptr_t", [
-  "void*",
-  koffi.pointer("uint16"),
-  koffi.pointer("uint16"),
-  koffi.pointer("uint16"),
-  koffi.pointer("uint16"),
-  "int"
-]);
-var SW_SHOW = 5;
 
 // src/windows/apps/icon-extractor.ts
 var runAsync = (fn) => {
@@ -364,16 +355,9 @@ class WindowsAppRegistry {
       },
       launch: () => {
         if (app.type === "uwp") {
-          execFileAsync("powershell.exe", [
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            `Start-Process "shell:AppsFolder\\${app.launch}"`
-          ], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 });
+          execFileAsync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `Start-Process "shell:AppsFolder\\${app.launch}"`], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 });
         } else {
-          const wide = Buffer.from(`${app.launch}\x00`, "utf16le");
-          ShellExecuteW(null, null, wide, null, null, SW_SHOW);
+          spawn(app.launch, [], { detached: true, stdio: "ignore" });
         }
       }
     }));
@@ -499,9 +483,9 @@ class WindowsProcessManager {
 }
 
 // src/windows/settings/settings.ts
+import { spawn as spawn2 } from "node:child_process";
 function launchSetting(id) {
-  const wide = Buffer.from(`ms-settings:${id}\x00`, "utf16le");
-  ShellExecuteW(null, null, wide, null, null, SW_SHOW);
+  spawn2(`ms-settings:${id}`, [], { detached: true, stdio: "ignore" });
 }
 
 class WindowsSettingRegistry {

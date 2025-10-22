@@ -1,10 +1,9 @@
 import type { App, AppRegistry } from "@/modules/apps";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
+import { execFile, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { extractIconAsBase64 } from "./icon-extractor";
-import { ShellExecuteW, SW_SHOW } from "./koffi-defs";
 
 const execFileAsync = promisify(execFile);
 
@@ -28,7 +27,7 @@ const runFetchAppsScript = async (): Promise<PSApp[]> => {
 
   const raw = stdout.trim();
   if (!raw) return [];
-  
+
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as PSApp[]) : parsed ? [parsed as PSApp] : [];
@@ -41,7 +40,7 @@ export class WindowsAppRegistry implements AppRegistry {
   async fetchApps(): Promise<App[]> {
     const apps = await runFetchAppsScript();
 
-    return apps.map(app => ({
+    return apps.map((app) => ({
       id: app.id,
       name: app.name,
       type: app.type,
@@ -51,15 +50,13 @@ export class WindowsAppRegistry implements AppRegistry {
       },
       launch: () => {
         if (app.type === "uwp") {
-          execFileAsync("powershell.exe", [
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-Command",
-            `Start-Process "shell:AppsFolder\\${app.launch}"`
-          ], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 });
+          execFileAsync(
+            "powershell.exe",
+            ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `Start-Process "shell:AppsFolder\\${app.launch}"`],
+            { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 }
+          );
         } else {
-          const wide = Buffer.from(`${app.launch}\0`, "utf16le");
-          ShellExecuteW(null, null, wide, null, null, SW_SHOW);
+          spawn(app.launch, [], { detached: true, stdio: "ignore" });
         }
       }
     }));

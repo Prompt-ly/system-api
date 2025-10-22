@@ -79,15 +79,3 @@ export const GetObject = gdi32.func("GetObjectW", "int", ["void*", "int", koffi.
 export const SHGFI_ICON = 0x000000100;
 export const SHGFI_SMALLICON = 0x000000001;
 export const DIB_RGB_COLORS = 0;
-
-// ShellExecuteW for launching files/URLs with the default handler
-export const ShellExecuteW = shell32.func("ShellExecuteW", "uintptr_t", [
-  "void*",
-  koffi.pointer("uint16"),
-  koffi.pointer("uint16"),
-  koffi.pointer("uint16"),
-  koffi.pointer("uint16"),
-  "int"
-]);
-
-export const SW_SHOW = 5;

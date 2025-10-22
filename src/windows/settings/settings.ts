@@ -1,9 +1,8 @@
 import type { Setting, SettingRegistry } from "@/modules/settings";
-import { ShellExecuteW, SW_SHOW } from "../apps/koffi-defs";
+import { spawn } from "node:child_process";
 
 function launchSetting(id: string): void {
-  const wide = Buffer.from(`ms-settings:${id}\0`, "utf16le");
-  ShellExecuteW(null, null, wide, null, null, SW_SHOW);
+  spawn(`ms-settings:${id}`, [], { detached: true, stdio: "ignore" });
 }
 
 export class WindowsSettingRegistry implements SettingRegistry {
