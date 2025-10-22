@@ -5,5 +5,5 @@ export interface Setting {
 }
 
 export interface SettingRegistry {
-  fetchSettings(): Promise<Setting[]>;
+  getSettings(): Setting[];
 }

@@ -7,7 +7,7 @@ function launchSetting(id: string): void {
 }
 
 export class WindowsSettingRegistry implements SettingRegistry {
-  async fetchSettings(): Promise<Setting[]> {
+  getSettings(): Setting[] {
     function setting(id: string, name: string): Setting {
       return { id: `ms-settings:${id}`, name, open: () => launchSetting(id) };
     }

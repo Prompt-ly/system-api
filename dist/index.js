@@ -505,7 +505,7 @@ function launchSetting(id) {
 }
 
 class WindowsSettingRegistry {
-  async fetchSettings() {
+  getSettings() {
     function setting(id, name) {
       return { id: `ms-settings:${id}`, name, open: () => launchSetting(id) };
     }

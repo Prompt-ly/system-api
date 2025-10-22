@@ -31,7 +31,7 @@ export interface Setting {
 	open: () => void;
 }
 export interface SettingRegistry {
-	fetchSettings(): Promise<Setting[]>;
+	getSettings(): Setting[];
 }
 declare const Process$1: ProcessManager;
 declare const Apps: AppRegistry;
