@@ -1,8 +1,8 @@
 import type { Setting, SettingRegistry } from "@/modules/settings";
-import { spawn } from "node:child_process";
+import { exec } from "node:child_process";
 
 function launchSetting(id: string): void {
-  spawn(`ms-settings:${id}`, [], { detached: true, stdio: "ignore" });
+  exec(`start ms-settings:${id}`);
 }
 
 export class WindowsSettingRegistry implements SettingRegistry {

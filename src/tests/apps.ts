@@ -15,5 +15,7 @@ for (const app of apps) {
   });
 }
 
-
 console.log("This should appear before any icons finish loading.");
+
+console.log("Opening first Windows setting...");
+Windows.Settings.getSettings()[0]?.open();
