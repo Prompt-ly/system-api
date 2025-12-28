@@ -483,9 +483,9 @@ class WindowsProcessManager {
 }
 
 // src/windows/settings/settings.ts
-import { spawn as spawn2 } from "node:child_process";
+import { exec } from "node:child_process";
 function launchSetting(id) {
-  spawn2(`ms-settings:${id}`, [], { detached: true, stdio: "ignore" });
+  exec(`start ms-settings:${id}`);
 }
 
 class WindowsSettingRegistry {
