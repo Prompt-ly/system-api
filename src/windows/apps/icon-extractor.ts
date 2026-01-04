@@ -53,15 +53,6 @@ const toWide = (s: string): Uint16Array => {
 
 const getMime = (ext: string) => MIME_TYPES[ext.toLowerCase()] || "image/png";
 
-const getPatterns = (base: string, ext: string, scale: number) => [
-  `${base}.scale-${scale}${ext}`,
-  `${base}.targetsize-${scale}${ext}`,
-  `${base}.contrast-standard_scale-${scale}${ext}`,
-  `${base}.${scale}${ext}`,
-  `${base}_${scale}${ext}`,
-  `${base}-${scale}${ext}`
-];
-
 type IconInfo = {
   fIcon: boolean;
   xHotspot: number;

@@ -8,14 +8,11 @@ for (const app of apps) {
   app.icon?.getBase64().then((b64) => {
     console.log(b64.length ? "✅" : "❌", app.name);
 
-    if (app.name.toLowerCase().includes("raycast")) {
-      console.log("Base64:", b64.length ? b64 : "No icon");
-      app.launch();
+    if (app.name.toLowerCase().includes("obsidian")) {
+      //console.log("Base64:", b64.length ? b64 : "No icon");
+      app.open();
     }
   });
 }
 
 console.log("This should appear before any icons finish loading.");
-
-console.log("Opening first Windows setting...");
-Windows.Settings.getSettings()[0]?.open();

@@ -1,4 +1,5 @@
 import type { App, AppRegistry } from "@/modules/apps";
+import type { WindowManager } from "@/modules/windows";
 import { execFile, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,18 +38,35 @@ const runFetchAppsScript = async (): Promise<PSApp[]> => {
 };
 
 export class WindowsAppRegistry implements AppRegistry {
+  private windowManager?: WindowManager;
+
+  setWindowManager(wm: WindowManager) {
+    this.windowManager = wm;
+  }
+
   async fetchApps(): Promise<App[]> {
     const apps = await runFetchAppsScript();
 
     return apps.map((app) => ({
       id: app.id,
       name: app.name,
+      path: app.launch,
       type: app.type,
       icon: {
         path: app.icon,
         getBase64: async () => (await extractIconAsBase64(app.icon)) ?? ""
       },
-      launch: () => {
+      open: async (newWindow?: boolean) => {
+        if (newWindow === true && this.windowManager) {
+          const windows = await this.windowManager.getAllOpenWindows();
+          const myWindows = windows.filter((w) => w.app?.id === app.id);
+          const win = myWindows[0];
+          if (win) {
+            win.focus();
+            return;
+          }
+        }
+
         if (app.type === "uwp") {
           execFileAsync(
             "powershell.exe",
@@ -58,6 +76,11 @@ export class WindowsAppRegistry implements AppRegistry {
         } else {
           spawn(app.launch, [], { detached: true, stdio: "ignore" });
         }
+      },
+      getOpenWindows: async () => {
+        if (!this.windowManager) return [];
+        const windows = await this.windowManager.getAllOpenWindows();
+        return windows.filter((w) => w.app?.id === app.id);
       }
     }));
   }

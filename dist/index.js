@@ -12,6 +12,7 @@ var __export = (target, all) => {
 // src/windows/windows.ts
 var exports_windows = {};
 __export(exports_windows, {
+  Windows: () => Windows,
   Settings: () => Settings,
   Process: () => Process,
   Apps: () => Apps
@@ -343,22 +344,42 @@ var runFetchAppsScript = async () => {
 };
 
 class WindowsAppRegistry {
+  windowManager;
+  setWindowManager(wm) {
+    this.windowManager = wm;
+  }
   async fetchApps() {
     const apps = await runFetchAppsScript();
     return apps.map((app) => ({
       id: app.id,
       name: app.name,
+      path: app.launch,
       type: app.type,
       icon: {
         path: app.icon,
         getBase64: async () => await extractIconAsBase64(app.icon) ?? ""
       },
-      launch: () => {
+      open: async (newWindow) => {
+        if (newWindow === true && this.windowManager) {
+          const windows = await this.windowManager.getAllOpenWindows();
+          const myWindows = windows.filter((w) => w.app?.id === app.id);
+          const win = myWindows[0];
+          if (win) {
+            win.focus();
+            return;
+          }
+        }
         if (app.type === "uwp") {
           execFileAsync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `Start-Process "shell:AppsFolder\\${app.launch}"`], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 });
         } else {
           spawn(app.launch, [], { detached: true, stdio: "ignore" });
         }
+      },
+      getOpenWindows: async () => {
+        if (!this.windowManager)
+          return [];
+        const windows = await this.windowManager.getAllOpenWindows();
+        return windows.filter((w) => w.app?.id === app.id);
       }
     }));
   }
@@ -610,10 +631,279 @@ class WindowsSettingRegistry {
   }
 }
 
+// src/windows/windows/window-manager.ts
+import { Buffer as Buffer2 } from "node:buffer";
+
+// src/windows/windows/constants.ts
+var WM_CLOSE = 16;
+var SW_MAXIMISE = 3;
+var SW_MINIMISE = 6;
+var SW_RESTORE = 9;
+var EVENT_SYSTEM_MINIMISESTART = 22;
+var WINEVENT_OUTOFCONTEXT = 0;
+var PROCESS_QUERY_LIMITED_INFORMATION = 4096;
+var PROCESS_VM_READ = 16;
+var GW_HWNDNEXT = 2;
+var GW_OWNER = 4;
+var GW_CHILD = 5;
+
+// src/windows/windows/events.ts
+import koffi7 from "koffi";
+
+// src/windows/windows/koffi-defs.ts
+import koffi6 from "koffi";
+var user322 = koffi6.load("user32.dll");
+var HANDLE = "intptr_t";
+var HWND = koffi6.alias("HWND", HANDLE);
+var BOOL = koffi6.alias("BOOL", "int");
+var UINT = "uint";
+var INT = "int";
+var LPARAM = "intptr_t";
+var WPARAM = "uintptr_t";
+var WINEVENTPROC = koffi6.proto("void WINEVENTPROC(void* hWinEventHook, uint event, HWND hwnd, long idObject, long idChild, uint dwEventThread, uint dwmsEventTime)");
+var WNDENUMPROC = koffi6.proto("int __stdcall WNDENUMPROC(HWND hwnd, intptr_t lParam)");
+var User32 = {
+  FindWindowA: user322.func("FindWindowA", HWND, ["str", "str"]),
+  GetForegroundWindow: user322.func("GetForegroundWindow", HWND, []),
+  SetForegroundWindow: user322.func("SetForegroundWindow", BOOL, [HWND]),
+  ShowWindow: user322.func("ShowWindow", BOOL, [HWND, INT]),
+  PostMessageA: user322.func("PostMessageA", BOOL, [HWND, UINT, WPARAM, LPARAM]),
+  IsWindowVisible: user322.func("IsWindowVisible", BOOL, [HWND]),
+  GetWindowPlacement: user322.func("GetWindowPlacement", BOOL, [HWND, "void*"]),
+  SetWinEventHook: user322.func("SetWinEventHook", HANDLE, [
+    UINT,
+    UINT,
+    "void*",
+    koffi6.pointer(WINEVENTPROC),
+    UINT,
+    UINT,
+    UINT
+  ]),
+  UnhookWinEvent: user322.func("UnhookWinEvent", BOOL, [HANDLE]),
+  EnumWindows: user322.func("EnumWindows", BOOL, [koffi6.pointer(WNDENUMPROC), LPARAM]),
+  GetWindowThreadProcessId: user322.func("GetWindowThreadProcessId", UINT, [HWND, "uint*"]),
+  SetWindowPos: user322.func("SetWindowPos", BOOL, [HWND, HWND, INT, INT, INT, INT, UINT]),
+  GetWindowTextA: user322.func("GetWindowTextA", INT, [HWND, "char*", INT]),
+  GetWindowDC: user322.func("GetWindowDC", HANDLE, [HWND]),
+  PrintWindow: user322.func("PrintWindow", BOOL, [HWND, HANDLE, UINT]),
+  GetWindow: user322.func("GetWindow", HWND, [HWND, UINT]),
+  GetDesktopWindow: user322.func("GetDesktopWindow", HWND, []),
+  ReleaseDC: user322.func("ReleaseDC", INT, [HWND, HANDLE])
+};
+var Kernel32 = {
+  OpenProcess: kernel32.func("OpenProcess", HANDLE, [UINT, BOOL, UINT]),
+  CloseHandle: kernel32.func("CloseHandle", BOOL, [HANDLE]),
+  QueryFullProcessImageNameA: kernel32.func("QueryFullProcessImageNameA", BOOL, [HANDLE, UINT, "char*", "uint*"])
+};
+
+// src/windows/windows/events.ts
+class WindowEventListener {
+  hook = null;
+  lastMinimisedWindowHandle = null;
+  callback = null;
+  constructor() {
+    this.initialize();
+  }
+  initialize() {
+    this.callback = koffi7.register((_hWinEventHook, event, hwnd) => {
+      if (event === EVENT_SYSTEM_MINIMISESTART) {
+        this.lastMinimisedWindowHandle = hwnd;
+      }
+    }, koffi7.pointer(WINEVENTPROC));
+    this.hook = User32.SetWinEventHook(EVENT_SYSTEM_MINIMISESTART, EVENT_SYSTEM_MINIMISESTART, null, this.callback, 0, 0, WINEVENT_OUTOFCONTEXT);
+  }
+  getLastMinimised() {
+    return this.lastMinimisedWindowHandle;
+  }
+  setLastMinimised(hwnd) {
+    this.lastMinimisedWindowHandle = hwnd;
+  }
+  clearLastMinimised() {
+    this.lastMinimisedWindowHandle = null;
+  }
+  dispose() {
+    if (this.hook) {
+      User32.UnhookWinEvent(this.hook);
+      this.hook = null;
+    }
+    if (this.callback) {
+      koffi7.unregister(this.callback);
+      this.callback = null;
+    }
+  }
+}
+var windowEventListener = new WindowEventListener;
+
+// src/windows/windows/window-manager.ts
+class WindowsWindowManager {
+  appRegistry;
+  constructor(appRegistry) {
+    this.appRegistry = appRegistry;
+  }
+  async getAllOpenWindows() {
+    const windows = this.getOpenWindows();
+    const foregroundWindow = this.getForegroundWindow();
+    const apps = await this.appRegistry.fetchApps();
+    return windows.map((window) => {
+      const app = apps.find((a) => a.path?.toLowerCase() === window.application?.toLowerCase());
+      return {
+        id: window.id,
+        title: window.title,
+        app,
+        isFocused: window.handle === foregroundWindow,
+        focus: () => this.openWindow(window.handle),
+        close: () => this.closeWindow(window.handle),
+        minimize: () => this.minimiseWindow(window.handle),
+        maximize: () => this.maximiseWindow(window.handle),
+        restore: () => this.restoreWindow(window.handle)
+      };
+    });
+  }
+  findWindowByTitle(title) {
+    return User32.FindWindowA(null, title);
+  }
+  getForegroundWindow() {
+    return User32.GetForegroundWindow();
+  }
+  closeWindow(handleOrTitle) {
+    const hwnd = typeof handleOrTitle === "string" ? this.findWindowByTitle(handleOrTitle) : handleOrTitle;
+    if (!hwnd)
+      return false;
+    return User32.PostMessageA(hwnd, WM_CLOSE, 0, 0);
+  }
+  restoreWindow(handleOrTitle) {
+    const hwnd = typeof handleOrTitle === "string" ? this.findWindowByTitle(handleOrTitle) : handleOrTitle;
+    if (!hwnd)
+      return false;
+    return User32.ShowWindow(hwnd, SW_RESTORE);
+  }
+  minimiseWindow(handleOrTitle) {
+    const hwnd = typeof handleOrTitle === "string" ? this.findWindowByTitle(handleOrTitle) : handleOrTitle;
+    if (!hwnd)
+      return false;
+    const result = User32.ShowWindow(hwnd, SW_MINIMISE);
+    if (result) {
+      windowEventListener.setLastMinimised(hwnd);
+    }
+    return result;
+  }
+  maximiseWindow(handleOrTitle) {
+    const hwnd = typeof handleOrTitle === "string" ? this.findWindowByTitle(handleOrTitle) : handleOrTitle;
+    if (!hwnd)
+      return false;
+    return User32.ShowWindow(hwnd, SW_MAXIMISE);
+  }
+  restoreLastMinimised() {
+    const hwnd = windowEventListener.getLastMinimised();
+    if (!hwnd)
+      return false;
+    User32.ShowWindow(hwnd, SW_RESTORE);
+    User32.SetForegroundWindow(hwnd);
+    windowEventListener.clearLastMinimised();
+    return true;
+  }
+  openWindow(hwnd) {
+    if (!hwnd)
+      return false;
+    const foreground = User32.GetForegroundWindow();
+    const isVisible = User32.IsWindowVisible(hwnd);
+    const placement = Buffer2.alloc(44);
+    User32.GetWindowPlacement(hwnd, placement);
+    const showCmd = placement.readUInt32LE(8);
+    const isMinimised = showCmd === 2;
+    if (isVisible && !isMinimised && foreground === hwnd) {
+      return true;
+    }
+    if (isVisible && !isMinimised) {
+      User32.SetForegroundWindow(hwnd);
+      return true;
+    }
+    User32.ShowWindow(hwnd, SW_RESTORE);
+    User32.SetForegroundWindow(hwnd);
+    return true;
+  }
+  getWindowsByApp(appPath) {
+    const windows = [];
+    const targetPath = appPath.toLowerCase();
+    let hwnd = User32.GetDesktopWindow();
+    hwnd = User32.GetWindow(hwnd, GW_CHILD);
+    while (hwnd) {
+      if (User32.IsWindowVisible(hwnd)) {
+        const pidBuffer = Buffer2.alloc(4);
+        User32.GetWindowThreadProcessId(hwnd, pidBuffer);
+        const pid = pidBuffer.readUInt32LE(0);
+        const hProcess = Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
+        if (hProcess) {
+          const pathBuffer = Buffer2.alloc(1024);
+          const sizeBuffer = Buffer2.alloc(4);
+          sizeBuffer.writeUInt32LE(pathBuffer.length, 0);
+          if (Kernel32.QueryFullProcessImageNameA(hProcess, 0, pathBuffer, sizeBuffer)) {
+            const len = sizeBuffer.readUInt32LE(0);
+            const path = pathBuffer.toString("utf8", 0, len).toLowerCase();
+            if (path === targetPath) {
+              windows.push(hwnd);
+            }
+          }
+          Kernel32.CloseHandle(hProcess);
+        }
+      }
+      hwnd = User32.GetWindow(hwnd, GW_HWNDNEXT);
+    }
+    return windows;
+  }
+  getOpenWindows() {
+    const windows = [];
+    let hwnd = User32.GetDesktopWindow();
+    hwnd = User32.GetWindow(hwnd, GW_CHILD);
+    while (hwnd) {
+      if (!User32.GetWindow(hwnd, GW_OWNER) && User32.IsWindowVisible(hwnd)) {
+        const titleBuffer = Buffer2.alloc(512);
+        User32.GetWindowTextA(hwnd, titleBuffer, titleBuffer.length);
+        const title = titleBuffer.toString("utf8").replace(/\0/g, "").trim();
+        if (title && title !== "Prompt-ly") {
+          const pidBuffer = Buffer2.alloc(4);
+          User32.GetWindowThreadProcessId(hwnd, pidBuffer);
+          const pid = pidBuffer.readUInt32LE(0);
+          let application;
+          const hProcess = Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+          if (hProcess) {
+            const pathBuffer = Buffer2.alloc(1024);
+            const sizeBuffer = Buffer2.alloc(4);
+            sizeBuffer.writeUInt32LE(pathBuffer.length, 0);
+            if (Kernel32.QueryFullProcessImageNameA(hProcess, 0, pathBuffer, sizeBuffer)) {
+              const len = sizeBuffer.readUInt32LE(0);
+              application = pathBuffer.toString("utf8", 0, len);
+            }
+            Kernel32.CloseHandle(hProcess);
+          }
+          let thumbnail;
+          const hdc = User32.GetWindowDC(hwnd);
+          if (hdc) {
+            User32.ReleaseDC(hwnd, hdc);
+          }
+          windows.push({
+            id: title.toLowerCase().replace(/\s+/g, "_"),
+            title,
+            application,
+            thumbnail,
+            processId: pid,
+            handle: hwnd
+          });
+        }
+      }
+      hwnd = User32.GetWindow(hwnd, GW_HWNDNEXT);
+    }
+    return windows;
+  }
+}
+
 // src/windows/windows.ts
 var Process = new WindowsProcessManager;
-var Apps = new WindowsAppRegistry;
+var appRegistry = new WindowsAppRegistry;
+var Apps = appRegistry;
 var Settings = new WindowsSettingRegistry;
+var Windows = new WindowsWindowManager(appRegistry);
+appRegistry.setWindowManager(Windows);
 export {
   exports_windows as Windows
 };
