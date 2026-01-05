@@ -5,6 +5,7 @@ export interface Window {
 	title: string;
 	app?: App;
 	isFocused: boolean;
+	getThumbnail: () => Promise<string | undefined>;
 	focus: () => void;
 	close: () => void;
 	minimize: () => void;

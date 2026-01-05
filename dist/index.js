@@ -27,20 +27,15 @@ import { promisify } from "node:util";
 // src/windows/apps/icon-extractor.ts
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
-import koffi2 from "koffi";
+import koffi3 from "koffi";
 
 // src/windows/apps/koffi-defs.ts
+import koffi2 from "koffi";
+
+// src/utils/koffi-globals.ts
 import koffi from "koffi";
-var shell32 = koffi.load("shell32.dll");
-var user32 = koffi.load("user32.dll");
-var gdi32 = koffi.load("gdi32.dll");
-var SHFILEINFOW = koffi.struct("SHFILEINFOW", {
-  hIcon: "void*",
-  iIcon: "int",
-  dwAttributes: "uint32",
-  szDisplayName: koffi.array("uint16", 260),
-  szTypeName: koffi.array("uint16", 80)
-});
+var kernel32 = koffi.load("kernel32.dll");
+var advapi32 = koffi.load("advapi32.dll");
 var BITMAPINFOHEADER = koffi.struct("BITMAPINFOHEADER", {
   biSize: "uint32",
   biWidth: "int32",
@@ -54,7 +49,19 @@ var BITMAPINFOHEADER = koffi.struct("BITMAPINFOHEADER", {
   biClrUsed: "uint32",
   biClrImportant: "uint32"
 });
-var BITMAP = koffi.struct("BITMAP", {
+
+// src/windows/apps/koffi-defs.ts
+var shell32 = koffi2.load("shell32.dll");
+var user32 = koffi2.load("user32.dll");
+var gdi32 = koffi2.load("gdi32.dll");
+var SHFILEINFOW = koffi2.struct("SHFILEINFOW", {
+  hIcon: "void*",
+  iIcon: "int",
+  dwAttributes: "uint32",
+  szDisplayName: koffi2.array("uint16", 260),
+  szTypeName: koffi2.array("uint16", 80)
+});
+var BITMAP = koffi2.struct("BITMAP", {
   bmType: "int32",
   bmWidth: "int32",
   bmHeight: "int32",
@@ -63,7 +70,7 @@ var BITMAP = koffi.struct("BITMAP", {
   bmBitsPixel: "uint16",
   bmBits: "void*"
 });
-var IconInfoStruct = koffi.struct({
+var IconInfoStruct = koffi2.struct({
   fIcon: "bool",
   xHotspot: "uint32",
   yHotspot: "uint32",
@@ -71,34 +78,34 @@ var IconInfoStruct = koffi.struct({
   hbmColor: "void*"
 });
 var SHGetFileInfoW = shell32.func("SHGetFileInfoW", "uintptr_t", [
-  koffi.pointer("uint16"),
+  koffi2.pointer("uint16"),
   "uint32",
-  koffi.out(koffi.pointer(SHFILEINFOW)),
+  koffi2.out(koffi2.pointer(SHFILEINFOW)),
   "uint32",
   "uint32"
 ]);
 var ExtractIconExW = shell32.func("ExtractIconExW", "uint32", [
-  koffi.pointer("uint16"),
+  koffi2.pointer("uint16"),
   "int",
-  koffi.out(koffi.pointer("void*")),
-  koffi.out(koffi.pointer("void*")),
+  koffi2.out(koffi2.pointer("void*")),
+  koffi2.out(koffi2.pointer("void*")),
   "uint32"
 ]);
 var DestroyIcon = user32.func("DestroyIcon", "bool", ["void*"]);
-var GetIconInfo = user32.func("GetIconInfo", "bool", ["void*", koffi.out(koffi.pointer(IconInfoStruct))]);
+var GetIconInfo = user32.func("GetIconInfo", "bool", ["void*", koffi2.out(koffi2.pointer(IconInfoStruct))]);
 var GetDIBits = gdi32.func("GetDIBits", "int", [
   "void*",
   "void*",
   "uint32",
   "uint32",
-  koffi.out("void*"),
-  koffi.out(koffi.pointer("void")),
+  koffi2.out("void*"),
+  koffi2.out(koffi2.pointer("void")),
   "uint32"
 ]);
 var GetDC = user32.func("GetDC", "void*", ["void*"]);
 var ReleaseDC = user32.func("ReleaseDC", "int", ["void*", "void*"]);
 var DeleteObject = gdi32.func("DeleteObject", "bool", ["void*"]);
-var GetObject = gdi32.func("GetObjectW", "int", ["void*", "int", koffi.out(koffi.pointer("void"))]);
+var GetObject = gdi32.func("GetObjectW", "int", ["void*", "int", koffi2.out(koffi2.pointer("void"))]);
 var SHGFI_ICON = 256;
 var SHGFI_SMALLICON = 1;
 var DIB_RGB_COLORS = 0;
@@ -149,8 +156,8 @@ async function iconToBase64(hIcon) {
       await runAsync(() => DestroyIcon(hIcon));
       return null;
     }
-    const bitmapInfo = Buffer.alloc(koffi2.sizeof(BITMAP));
-    const result = await runAsync(() => GetObject(iconInfo.hbmColor, koffi2.sizeof(BITMAP), bitmapInfo));
+    const bitmapInfo = Buffer.alloc(koffi3.sizeof(BITMAP));
+    const result = await runAsync(() => GetObject(iconInfo.hbmColor, koffi3.sizeof(BITMAP), bitmapInfo));
     if (result === 0) {
       await runAsync(() => ReleaseDC(null, hdc));
       await runAsync(() => DeleteObject(iconInfo.hbmMask));
@@ -158,7 +165,7 @@ async function iconToBase64(hIcon) {
       await runAsync(() => DestroyIcon(hIcon));
       return null;
     }
-    const bitmap = koffi2.decode(bitmapInfo, BITMAP);
+    const bitmap = koffi3.decode(bitmapInfo, BITMAP);
     const width = Math.abs(bitmap.bmWidth);
     const height = Math.abs(bitmap.bmHeight);
     if (width === 0 || height === 0 || width > 256 || height > 256) {
@@ -184,7 +191,7 @@ async function iconToBase64(hIcon) {
     };
     const bufferSize = width * height * 4;
     const pixelData = Buffer.alloc(bufferSize);
-    koffi2.encode(bmi, BITMAPINFOHEADER, bmiHeader);
+    koffi3.encode(bmi, BITMAPINFOHEADER, bmiHeader);
     const dibResult = await runAsync(() => GetDIBits(hdc, iconInfo.hbmColor, 0, height, pixelData, bmi, DIB_RGB_COLORS));
     await runAsync(() => ReleaseDC(null, hdc));
     await runAsync(() => DeleteObject(iconInfo.hbmMask));
@@ -280,7 +287,7 @@ async function extractEmbeddedIcon(filePath, index = 0) {
     }
     const fileInfo = {};
     const wideFilePathForShell = toWide(filePath);
-    const result = await runAsync(() => SHGetFileInfoW(wideFilePathForShell, 0, fileInfo, koffi2.sizeof(SHFILEINFOW), SHGFI_ICON | SHGFI_SMALLICON));
+    const result = await runAsync(() => SHGetFileInfoW(wideFilePathForShell, 0, fileInfo, koffi3.sizeof(SHFILEINFOW), SHGFI_ICON | SHGFI_SMALLICON));
     if (result && fileInfo.hIcon) {
       return await iconToBase64(fileInfo.hIcon);
     }
@@ -345,12 +352,18 @@ var runFetchAppsScript = async () => {
 
 class WindowsAppRegistry {
   windowManager;
+  cachedApps = null;
+  lastFetchTime = 0;
+  CACHE_DURATION = 5 * 60 * 1000;
   setWindowManager(wm) {
     this.windowManager = wm;
   }
   async fetchApps() {
+    if (this.cachedApps && Date.now() - this.lastFetchTime < this.CACHE_DURATION) {
+      return this.cachedApps;
+    }
     const apps = await runFetchAppsScript();
-    return apps.map((app) => ({
+    this.cachedApps = apps.map((app) => ({
       id: app.id,
       name: app.name,
       path: app.launch,
@@ -382,6 +395,8 @@ class WindowsAppRegistry {
         return windows.filter((w) => w.app?.id === app.id);
       }
     }));
+    this.lastFetchTime = Date.now();
+    return this.cachedApps;
   }
 }
 
@@ -402,13 +417,6 @@ function wideCharArrayToString(arr) {
 
 // src/windows/process/koffi-defs.ts
 import koffi4 from "koffi";
-
-// src/utils/koffi-globals.ts
-import koffi3 from "koffi";
-var kernel32 = koffi3.load("kernel32.dll");
-var advapi32 = koffi3.load("advapi32.dll");
-
-// src/windows/process/koffi-defs.ts
 var PROCESSENTRY32W_STRUCT = koffi4.struct("PROCESSENTRY32W", {
   dwSize: "uint32",
   cntUsage: "uint32",
@@ -632,7 +640,7 @@ class WindowsSettingRegistry {
 }
 
 // src/windows/windows/window-manager.ts
-import { Buffer as Buffer2 } from "node:buffer";
+import { Buffer as Buffer3 } from "node:buffer";
 
 // src/windows/windows/constants.ts
 var WM_CLOSE = 16;
@@ -653,13 +661,28 @@ import koffi7 from "koffi";
 // src/windows/windows/koffi-defs.ts
 import koffi6 from "koffi";
 var user322 = koffi6.load("user32.dll");
+var gdi322 = koffi6.load("gdi32.dll");
 var HANDLE = "intptr_t";
 var HWND = koffi6.alias("HWND", HANDLE);
+var HBITMAP = koffi6.alias("HBITMAP", HANDLE);
+var HDC = koffi6.alias("HDC", HANDLE);
+var HGDIOBJ = koffi6.alias("HGDIOBJ", HANDLE);
 var BOOL = koffi6.alias("BOOL", "int");
 var UINT = "uint";
 var INT = "int";
 var LPARAM = "intptr_t";
 var WPARAM = "uintptr_t";
+var LONG = "long";
+var RECT = koffi6.struct("RECT", {
+  left: LONG,
+  top: LONG,
+  right: LONG,
+  bottom: LONG
+});
+var BITMAPINFO = koffi6.struct("BITMAPINFO", {
+  bmiHeader: BITMAPINFOHEADER,
+  bmiColors: koffi6.array("uint32", 1)
+});
 var WINEVENTPROC = koffi6.proto("void WINEVENTPROC(void* hWinEventHook, uint event, HWND hwnd, long idObject, long idChild, uint dwEventThread, uint dwmsEventTime)");
 var WNDENUMPROC = koffi6.proto("int __stdcall WNDENUMPROC(HWND hwnd, intptr_t lParam)");
 var User32 = {
@@ -684,11 +707,20 @@ var User32 = {
   GetWindowThreadProcessId: user322.func("GetWindowThreadProcessId", UINT, [HWND, "uint*"]),
   SetWindowPos: user322.func("SetWindowPos", BOOL, [HWND, HWND, INT, INT, INT, INT, UINT]),
   GetWindowTextA: user322.func("GetWindowTextA", INT, [HWND, "char*", INT]),
-  GetWindowDC: user322.func("GetWindowDC", HANDLE, [HWND]),
-  PrintWindow: user322.func("PrintWindow", BOOL, [HWND, HANDLE, UINT]),
+  GetWindowDC: user322.func("GetWindowDC", HDC, [HWND]),
+  PrintWindow: user322.func("PrintWindow", BOOL, [HWND, HDC, UINT]),
   GetWindow: user322.func("GetWindow", HWND, [HWND, UINT]),
   GetDesktopWindow: user322.func("GetDesktopWindow", HWND, []),
-  ReleaseDC: user322.func("ReleaseDC", INT, [HWND, HANDLE])
+  ReleaseDC: user322.func("ReleaseDC", INT, [HWND, HDC]),
+  GetWindowRect: user322.func("GetWindowRect", BOOL, [HWND, koffi6.out(koffi6.pointer(RECT))])
+};
+var Gdi32 = {
+  CreateCompatibleDC: gdi322.func("CreateCompatibleDC", HDC, [HDC]),
+  CreateCompatibleBitmap: gdi322.func("CreateCompatibleBitmap", HBITMAP, [HDC, INT, INT]),
+  SelectObject: gdi322.func("SelectObject", HGDIOBJ, [HDC, HGDIOBJ]),
+  DeleteObject: gdi322.func("DeleteObject", BOOL, [HGDIOBJ]),
+  DeleteDC: gdi322.func("DeleteDC", BOOL, [HDC]),
+  GetDIBits: gdi322.func("GetDIBits", INT, [HDC, HBITMAP, UINT, UINT, "void*", koffi6.pointer(BITMAPINFO), UINT])
 };
 var Kernel32 = {
   OpenProcess: kernel32.func("OpenProcess", HANDLE, [UINT, BOOL, UINT]),
@@ -734,6 +766,81 @@ class WindowEventListener {
 }
 var windowEventListener = new WindowEventListener;
 
+// src/windows/windows/thumbnail.ts
+import { Buffer as Buffer2 } from "node:buffer";
+var DIB_RGB_COLORS2 = 0;
+var PW_RENDERFULLCONTENT = 2;
+var captureWindowThumbnail = (hwnd) => {
+  const rect = {};
+  if (!User32.GetWindowRect(hwnd, rect))
+    return;
+  const width = rect.right - rect.left;
+  const height = rect.bottom - rect.top;
+  if (width <= 0 || height <= 0)
+    return;
+  const hdcWindow = User32.GetWindowDC(hwnd);
+  if (!hdcWindow)
+    return;
+  const hdcMem = Gdi32.CreateCompatibleDC(hdcWindow);
+  const hBitmap = Gdi32.CreateCompatibleBitmap(hdcWindow, width, height);
+  const hOld = Gdi32.SelectObject(hdcMem, hBitmap);
+  const result = User32.PrintWindow(hwnd, hdcMem, PW_RENDERFULLCONTENT);
+  if (!result) {
+    Gdi32.SelectObject(hdcMem, hOld);
+    Gdi32.DeleteObject(hBitmap);
+    Gdi32.DeleteDC(hdcMem);
+    User32.ReleaseDC(hwnd, hdcWindow);
+    return;
+  }
+  const bmi = {
+    bmiHeader: {
+      biSize: 40,
+      biWidth: width,
+      biHeight: height,
+      biPlanes: 1,
+      biBitCount: 32,
+      biCompression: 0,
+      biSizeImage: 0,
+      biXPelsPerMeter: 0,
+      biYPelsPerMeter: 0,
+      biClrUsed: 0,
+      biClrImportant: 0
+    },
+    bmiColors: [0]
+  };
+  const bufferSize = width * height * 4;
+  const buffer = Buffer2.alloc(bufferSize);
+  const lines = Gdi32.GetDIBits(hdcMem, hBitmap, 0, height, buffer, bmi, DIB_RGB_COLORS2);
+  Gdi32.SelectObject(hdcMem, hOld);
+  Gdi32.DeleteObject(hBitmap);
+  Gdi32.DeleteDC(hdcMem);
+  User32.ReleaseDC(hwnd, hdcWindow);
+  if (lines === 0)
+    return;
+  const fileHeaderSize = 14;
+  const infoHeaderSize = 40;
+  const fileSize = fileHeaderSize + infoHeaderSize + bufferSize;
+  const fileHeader = Buffer2.alloc(fileHeaderSize);
+  fileHeader.write("BM", 0);
+  fileHeader.writeUInt32LE(fileSize, 2);
+  fileHeader.writeUInt32LE(0, 6);
+  fileHeader.writeUInt32LE(fileHeaderSize + infoHeaderSize, 10);
+  const infoHeader = Buffer2.alloc(infoHeaderSize);
+  infoHeader.writeUInt32LE(infoHeaderSize, 0);
+  infoHeader.writeInt32LE(width, 4);
+  infoHeader.writeInt32LE(height, 8);
+  infoHeader.writeUInt16LE(1, 12);
+  infoHeader.writeUInt16LE(32, 14);
+  infoHeader.writeUInt32LE(0, 16);
+  infoHeader.writeUInt32LE(bufferSize, 20);
+  infoHeader.writeInt32LE(0, 24);
+  infoHeader.writeInt32LE(0, 28);
+  infoHeader.writeUInt32LE(0, 32);
+  infoHeader.writeUInt32LE(0, 36);
+  const bmpBuffer = Buffer2.concat([fileHeader, infoHeader, buffer]);
+  return bmpBuffer.toString("base64");
+};
+
 // src/windows/windows/window-manager.ts
 class WindowsWindowManager {
   appRegistry;
@@ -751,6 +858,7 @@ class WindowsWindowManager {
         title: window.title,
         app,
         isFocused: window.handle === foregroundWindow,
+        getThumbnail: async () => captureWindowThumbnail(window.handle),
         focus: () => this.openWindow(window.handle),
         close: () => this.closeWindow(window.handle),
         minimize: () => this.minimiseWindow(window.handle),
@@ -807,7 +915,7 @@ class WindowsWindowManager {
       return false;
     const foreground = User32.GetForegroundWindow();
     const isVisible = User32.IsWindowVisible(hwnd);
-    const placement = Buffer2.alloc(44);
+    const placement = Buffer3.alloc(44);
     User32.GetWindowPlacement(hwnd, placement);
     const showCmd = placement.readUInt32LE(8);
     const isMinimised = showCmd === 2;
@@ -829,13 +937,13 @@ class WindowsWindowManager {
     hwnd = User32.GetWindow(hwnd, GW_CHILD);
     while (hwnd) {
       if (User32.IsWindowVisible(hwnd)) {
-        const pidBuffer = Buffer2.alloc(4);
+        const pidBuffer = Buffer3.alloc(4);
         User32.GetWindowThreadProcessId(hwnd, pidBuffer);
         const pid = pidBuffer.readUInt32LE(0);
         const hProcess = Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid);
         if (hProcess) {
-          const pathBuffer = Buffer2.alloc(1024);
-          const sizeBuffer = Buffer2.alloc(4);
+          const pathBuffer = Buffer3.alloc(1024);
+          const sizeBuffer = Buffer3.alloc(4);
           sizeBuffer.writeUInt32LE(pathBuffer.length, 0);
           if (Kernel32.QueryFullProcessImageNameA(hProcess, 0, pathBuffer, sizeBuffer)) {
             const len = sizeBuffer.readUInt32LE(0);
@@ -853,39 +961,39 @@ class WindowsWindowManager {
   }
   getOpenWindows() {
     const windows = [];
+    const pidMap = new Map;
     let hwnd = User32.GetDesktopWindow();
     hwnd = User32.GetWindow(hwnd, GW_CHILD);
     while (hwnd) {
       if (!User32.GetWindow(hwnd, GW_OWNER) && User32.IsWindowVisible(hwnd)) {
-        const titleBuffer = Buffer2.alloc(512);
+        const titleBuffer = Buffer3.alloc(512);
         User32.GetWindowTextA(hwnd, titleBuffer, titleBuffer.length);
         const title = titleBuffer.toString("utf8").replace(/\0/g, "").trim();
         if (title && title !== "Prompt-ly") {
-          const pidBuffer = Buffer2.alloc(4);
+          const pidBuffer = Buffer3.alloc(4);
           User32.GetWindowThreadProcessId(hwnd, pidBuffer);
           const pid = pidBuffer.readUInt32LE(0);
           let application;
-          const hProcess = Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-          if (hProcess) {
-            const pathBuffer = Buffer2.alloc(1024);
-            const sizeBuffer = Buffer2.alloc(4);
-            sizeBuffer.writeUInt32LE(pathBuffer.length, 0);
-            if (Kernel32.QueryFullProcessImageNameA(hProcess, 0, pathBuffer, sizeBuffer)) {
-              const len = sizeBuffer.readUInt32LE(0);
-              application = pathBuffer.toString("utf8", 0, len);
+          if (pidMap.has(pid)) {
+            application = pidMap.get(pid);
+          } else {
+            const hProcess = Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if (hProcess) {
+              const pathBuffer = Buffer3.alloc(1024);
+              const sizeBuffer = Buffer3.alloc(4);
+              sizeBuffer.writeUInt32LE(pathBuffer.length, 0);
+              if (Kernel32.QueryFullProcessImageNameA(hProcess, 0, pathBuffer, sizeBuffer)) {
+                const len = sizeBuffer.readUInt32LE(0);
+                application = pathBuffer.toString("utf8", 0, len);
+                pidMap.set(pid, application);
+              }
+              Kernel32.CloseHandle(hProcess);
             }
-            Kernel32.CloseHandle(hProcess);
-          }
-          let thumbnail;
-          const hdc = User32.GetWindowDC(hwnd);
-          if (hdc) {
-            User32.ReleaseDC(hwnd, hdc);
           }
           windows.push({
             id: title.toLowerCase().replace(/\s+/g, "_"),
             title,
             application,
-            thumbnail,
             processId: pid,
             handle: hwnd
           });

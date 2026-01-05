@@ -1,16 +1,38 @@
 import koffi from "koffi";
-import { kernel32 } from "../../utils/koffi-globals";
+import { BITMAPINFOHEADER, kernel32 } from "../../utils/koffi-globals";
 
 const user32 = koffi.load("user32.dll");
+const gdi32 = koffi.load("gdi32.dll");
 
 // Types
 const HANDLE = "intptr_t"; // Use intptr_t for handles to avoid object wrapping issues
 const HWND = koffi.alias("HWND", HANDLE);
+const HBITMAP = koffi.alias("HBITMAP", HANDLE);
+const HDC = koffi.alias("HDC", HANDLE);
+const HGDIOBJ = koffi.alias("HGDIOBJ", HANDLE);
 const BOOL = koffi.alias("BOOL", "int"); // bool is often int in C
 const UINT = "uint";
 const INT = "int";
 const LPARAM = "intptr_t";
 const WPARAM = "uintptr_t";
+const LONG = "long";
+const WORD = "uint16";
+const DWORD = "uint32";
+
+// Structs
+export const RECT = koffi.struct("RECT", {
+  left: LONG,
+  top: LONG,
+  right: LONG,
+  bottom: LONG
+});
+
+export { BITMAPINFOHEADER };
+
+export const BITMAPINFO = koffi.struct("BITMAPINFO", {
+  bmiHeader: BITMAPINFOHEADER,
+  bmiColors: koffi.array("uint32", 1) // We only use this for RGB, so 1 is fine or even 0 if we handle pointer math
+});
 
 // Callbacks
 export const WINEVENTPROC = koffi.proto(
@@ -42,11 +64,22 @@ export const User32 = {
   GetWindowThreadProcessId: user32.func("GetWindowThreadProcessId", UINT, [HWND, "uint*"]),
   SetWindowPos: user32.func("SetWindowPos", BOOL, [HWND, HWND, INT, INT, INT, INT, UINT]),
   GetWindowTextA: user32.func("GetWindowTextA", INT, [HWND, "char*", INT]),
-  GetWindowDC: user32.func("GetWindowDC", HANDLE, [HWND]),
-  PrintWindow: user32.func("PrintWindow", BOOL, [HWND, HANDLE, UINT]),
+  GetWindowDC: user32.func("GetWindowDC", HDC, [HWND]),
+  PrintWindow: user32.func("PrintWindow", BOOL, [HWND, HDC, UINT]),
   GetWindow: user32.func("GetWindow", HWND, [HWND, UINT]),
   GetDesktopWindow: user32.func("GetDesktopWindow", HWND, []),
-  ReleaseDC: user32.func("ReleaseDC", INT, [HWND, HANDLE])
+  ReleaseDC: user32.func("ReleaseDC", INT, [HWND, HDC]),
+  GetWindowRect: user32.func("GetWindowRect", BOOL, [HWND, koffi.out(koffi.pointer(RECT))])
+};
+
+// GDI32 Functions
+export const Gdi32 = {
+  CreateCompatibleDC: gdi32.func("CreateCompatibleDC", HDC, [HDC]),
+  CreateCompatibleBitmap: gdi32.func("CreateCompatibleBitmap", HBITMAP, [HDC, INT, INT]),
+  SelectObject: gdi32.func("SelectObject", HGDIOBJ, [HDC, HGDIOBJ]),
+  DeleteObject: gdi32.func("DeleteObject", BOOL, [HGDIOBJ]),
+  DeleteDC: gdi32.func("DeleteDC", BOOL, [HDC]),
+  GetDIBits: gdi32.func("GetDIBits", INT, [HDC, HBITMAP, UINT, UINT, "void*", koffi.pointer(BITMAPINFO), UINT])
 };
 
 // Kernel32 Functions (extending what might be in globals or defining new ones)

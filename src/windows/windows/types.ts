@@ -4,7 +4,6 @@ export interface WindowInfo {
   id: string;
   title: string;
   application?: string;
-  thumbnail?: string;
   processId: number;
   handle: NativeHandle; // void*
 }

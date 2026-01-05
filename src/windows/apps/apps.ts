@@ -39,15 +39,22 @@ const runFetchAppsScript = async (): Promise<PSApp[]> => {
 
 export class WindowsAppRegistry implements AppRegistry {
   private windowManager?: WindowManager;
+  private cachedApps: App[] | null = null;
+  private lastFetchTime: number = 0;
+  private readonly CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
   setWindowManager(wm: WindowManager) {
     this.windowManager = wm;
   }
 
   async fetchApps(): Promise<App[]> {
+    if (this.cachedApps && Date.now() - this.lastFetchTime < this.CACHE_DURATION) {
+      return this.cachedApps;
+    }
+
     const apps = await runFetchAppsScript();
 
-    return apps.map((app) => ({
+    this.cachedApps = apps.map((app) => ({
       id: app.id,
       name: app.name,
       path: app.launch,
@@ -83,5 +90,8 @@ export class WindowsAppRegistry implements AppRegistry {
         return windows.filter((w) => w.app?.id === app.id);
       }
     }));
+
+    this.lastFetchTime = Date.now();
+    return this.cachedApps;
   }
 }

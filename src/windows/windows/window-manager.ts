@@ -15,6 +15,7 @@ import {
 } from "./constants";
 import { windowEventListener } from "./events";
 import { Kernel32, User32 } from "./koffi-defs";
+import { captureWindowThumbnail } from "./thumbnail";
 
 export class WindowsWindowManager implements WindowManager {
   constructor(private appRegistry: AppRegistry) {}
@@ -32,6 +33,7 @@ export class WindowsWindowManager implements WindowManager {
         title: window.title,
         app,
         isFocused: window.handle === foregroundWindow,
+        getThumbnail: async () => captureWindowThumbnail(window.handle),
         focus: () => this.openWindow(window.handle),
         close: () => this.closeWindow(window.handle),
         minimize: () => this.minimiseWindow(window.handle),
@@ -153,6 +155,7 @@ export class WindowsWindowManager implements WindowManager {
 
   getOpenWindows(): WindowInfo[] {
     const windows: WindowInfo[] = [];
+    const pidMap = new Map<number, string>();
 
     let hwnd = User32.GetDesktopWindow();
     hwnd = User32.GetWindow(hwnd, GW_CHILD);
@@ -170,32 +173,30 @@ export class WindowsWindowManager implements WindowManager {
           const pid = pidBuffer.readUInt32LE(0);
 
           let application: string | undefined;
-          const hProcess = Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
 
-          if (hProcess) {
-            const pathBuffer = Buffer.alloc(1024);
-            const sizeBuffer = Buffer.alloc(4);
-            sizeBuffer.writeUInt32LE(pathBuffer.length, 0);
+          if (pidMap.has(pid)) {
+            application = pidMap.get(pid);
+          } else {
+            const hProcess = Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
 
-            if (Kernel32.QueryFullProcessImageNameA(hProcess, 0, pathBuffer, sizeBuffer)) {
-              const len = sizeBuffer.readUInt32LE(0);
-              application = pathBuffer.toString("utf8", 0, len);
+            if (hProcess) {
+              const pathBuffer = Buffer.alloc(1024);
+              const sizeBuffer = Buffer.alloc(4);
+              sizeBuffer.writeUInt32LE(pathBuffer.length, 0);
+
+              if (Kernel32.QueryFullProcessImageNameA(hProcess, 0, pathBuffer, sizeBuffer)) {
+                const len = sizeBuffer.readUInt32LE(0);
+                application = pathBuffer.toString("utf8", 0, len);
+                pidMap.set(pid, application);
+              }
+              Kernel32.CloseHandle(hProcess);
             }
-            Kernel32.CloseHandle(hProcess);
-          }
-
-          // Thumbnail
-          let thumbnail: string | undefined;
-          const hdc = User32.GetWindowDC(hwnd);
-          if (hdc) {
-            User32.ReleaseDC(hwnd, hdc);
           }
 
           windows.push({
             id: title.toLowerCase().replace(/\s+/g, "_"),
             title,
             application,
-            thumbnail, // Leaving undefined for now
             processId: pid,
             handle: hwnd
           });

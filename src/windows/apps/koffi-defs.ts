@@ -1,8 +1,11 @@
 import koffi from "koffi";
+import { BITMAPINFOHEADER } from "../../utils/koffi-globals";
 
 const shell32 = koffi.load("shell32.dll");
 const user32 = koffi.load("user32.dll");
 const gdi32 = koffi.load("gdi32.dll");
+
+export { BITMAPINFOHEADER };
 
 export const SHFILEINFOW = koffi.struct("SHFILEINFOW", {
   hIcon: "void*",
@@ -10,20 +13,6 @@ export const SHFILEINFOW = koffi.struct("SHFILEINFOW", {
   dwAttributes: "uint32",
   szDisplayName: koffi.array("uint16", 260),
   szTypeName: koffi.array("uint16", 80)
-});
-
-export const BITMAPINFOHEADER = koffi.struct("BITMAPINFOHEADER", {
-  biSize: "uint32",
-  biWidth: "int32",
-  biHeight: "int32",
-  biPlanes: "uint16",
-  biBitCount: "uint16",
-  biCompression: "uint32",
-  biSizeImage: "uint32",
-  biXPelsPerMeter: "int32",
-  biYPelsPerMeter: "int32",
-  biClrUsed: "uint32",
-  biClrImportant: "uint32"
 });
 
 export const BITMAP = koffi.struct("BITMAP", {
