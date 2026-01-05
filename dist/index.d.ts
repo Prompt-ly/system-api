@@ -14,6 +14,7 @@ export interface Window {
 }
 export interface WindowManager {
 	getAllOpenWindows(): Promise<Window[]>;
+	getActiveWindow(): Promise<Window | undefined>;
 }
 export interface App {
 	id: string;

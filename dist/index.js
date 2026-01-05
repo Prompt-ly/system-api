@@ -867,6 +867,45 @@ class WindowsWindowManager {
       };
     });
   }
+  async getActiveWindow() {
+    const hwnd = this.getForegroundWindow();
+    if (!hwnd)
+      return;
+    const titleBuffer = Buffer3.alloc(512);
+    User32.GetWindowTextA(hwnd, titleBuffer, titleBuffer.length);
+    const title = titleBuffer.toString("utf8").replace(/\0/g, "").trim();
+    if (!title)
+      return;
+    const pidBuffer = Buffer3.alloc(4);
+    User32.GetWindowThreadProcessId(hwnd, pidBuffer);
+    const pid = pidBuffer.readUInt32LE(0);
+    let application;
+    const hProcess = Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    if (hProcess) {
+      const pathBuffer = Buffer3.alloc(1024);
+      const sizeBuffer = Buffer3.alloc(4);
+      sizeBuffer.writeUInt32LE(pathBuffer.length, 0);
+      if (Kernel32.QueryFullProcessImageNameA(hProcess, 0, pathBuffer, sizeBuffer)) {
+        const len = sizeBuffer.readUInt32LE(0);
+        application = pathBuffer.toString("utf8", 0, len);
+      }
+      Kernel32.CloseHandle(hProcess);
+    }
+    const apps = await this.appRegistry.fetchApps();
+    const app = apps.find((a) => a.path?.toLowerCase() === application?.toLowerCase());
+    return {
+      id: title.toLowerCase().replace(/\s+/g, "_"),
+      title,
+      app,
+      isFocused: true,
+      getThumbnail: async () => captureWindowThumbnail(hwnd),
+      focus: () => this.openWindow(hwnd),
+      close: () => this.closeWindow(hwnd),
+      minimize: () => this.minimiseWindow(hwnd),
+      maximize: () => this.maximiseWindow(hwnd),
+      restore: () => this.restoreWindow(hwnd)
+    };
+  }
   findWindowByTitle(title) {
     return User32.FindWindowA(null, title);
   }

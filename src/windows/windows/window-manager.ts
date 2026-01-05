@@ -43,6 +43,52 @@ export class WindowsWindowManager implements WindowManager {
     });
   }
 
+  async getActiveWindow(): Promise<Window | undefined> {
+    const hwnd = this.getForegroundWindow();
+    if (!hwnd) return undefined;
+
+    const titleBuffer = Buffer.alloc(512);
+    User32.GetWindowTextA(hwnd, titleBuffer, titleBuffer.length);
+    const title = titleBuffer.toString("utf8").replace(/\0/g, "").trim();
+
+    if (!title) return undefined;
+
+    const pidBuffer = Buffer.alloc(4);
+    User32.GetWindowThreadProcessId(hwnd, pidBuffer);
+    const pid = pidBuffer.readUInt32LE(0);
+
+    let application: string | undefined;
+    const hProcess = Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+
+    if (hProcess) {
+      const pathBuffer = Buffer.alloc(1024);
+      const sizeBuffer = Buffer.alloc(4);
+      sizeBuffer.writeUInt32LE(pathBuffer.length, 0);
+
+      if (Kernel32.QueryFullProcessImageNameA(hProcess, 0, pathBuffer, sizeBuffer)) {
+        const len = sizeBuffer.readUInt32LE(0);
+        application = pathBuffer.toString("utf8", 0, len);
+      }
+      Kernel32.CloseHandle(hProcess);
+    }
+
+    const apps = await this.appRegistry.fetchApps();
+    const app = apps.find((a) => a.path?.toLowerCase() === application?.toLowerCase());
+
+    return {
+      id: title.toLowerCase().replace(/\s+/g, "_"),
+      title,
+      app,
+      isFocused: true,
+      getThumbnail: async () => captureWindowThumbnail(hwnd),
+      focus: () => this.openWindow(hwnd),
+      close: () => this.closeWindow(hwnd),
+      minimize: () => this.minimiseWindow(hwnd),
+      maximize: () => this.maximiseWindow(hwnd),
+      restore: () => this.restoreWindow(hwnd)
+    };
+  }
+
   findWindowByTitle(title: string): NativeHandle {
     return User32.FindWindowA(null, title);
   }

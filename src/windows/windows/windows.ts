@@ -29,6 +29,14 @@ export const Windows = {
     return WindowManager.getOpenWindows();
   },
 
+  getAllOpenWindows() {
+    return WindowManager.getAllOpenWindows();
+  },
+
+  getActiveWindow() {
+    return WindowManager.getActiveWindow();
+  },
+
   // Window Actions
   close(handleOrTitle: NativeHandle | string) {
     return WindowManager.closeWindow(handleOrTitle);

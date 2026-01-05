@@ -21,6 +21,7 @@ if (openWindows.length > 0) {
 }
 
 console.log(openWindows.map((win) => win.app?.name ?? "unknown").join("\n"));
+console.log(`Currently active window: ${(await Windows.Windows.getActiveWindow())?.title ?? "none"}`);
 
 // const window = openWindows.find((win) => win.title.includes("Zen"));
 // if (window) {
