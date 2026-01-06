@@ -373,7 +373,7 @@ class WindowsAppRegistry {
         getBase64: async () => await extractIconAsBase64(app.icon) ?? ""
       },
       open: async (newWindow) => {
-        if (newWindow === true && this.windowManager) {
+        if (newWindow !== true && this.windowManager) {
           const windows = await this.windowManager.getAllOpenWindows();
           const myWindows = windows.filter((w) => w.app?.id === app.id);
           const win = myWindows[0];
