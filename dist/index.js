@@ -20,6 +20,10 @@ __export(exports_windows, {
 
 // src/windows/apps/apps.ts
 import { execFile, spawn } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 // src/windows/apps/icon-extractor.ts
@@ -333,6 +337,30 @@ async function extractIconAsBase64(filePath) {
 
 // src/windows/apps/apps.ts
 var execFileAsync = promisify(execFile);
+var currentDir = dirname(fileURLToPath(import.meta.url));
+var powershellScriptCandidates = [
+  join(currentDir, "fetch-apps.ps1"),
+  join(currentDir, "../../../fetch-apps.ps1"),
+  join(process.cwd(), "src/windows/apps/fetch-apps.ps1"),
+  join(process.cwd(), "dist/fetch-apps.ps1")
+];
+var powershellScriptPath = powershellScriptCandidates.find((candidate) => existsSync(candidate));
+var executablePowershellScriptPath = null;
+var getExecutablePowershellScriptPath = () => {
+  if (executablePowershellScriptPath) {
+    return executablePowershellScriptPath;
+  }
+  const normalizedScriptPath = powershellScriptPath?.replace(/\\/g, "/").toLowerCase();
+  if (powershellScriptPath && !normalizedScriptPath?.includes(".asar/")) {
+    executablePowershellScriptPath = powershellScriptPath;
+    return executablePowershellScriptPath;
+  }
+  const script = powershellScriptPath ? readFileSync(powershellScriptPath, "utf8") : POWERSHELL_SCRIPT;
+  const tempScriptPath = join(tmpdir(), "system-api-fetch-apps.ps1");
+  writeFileSync(tempScriptPath, script, "utf8");
+  executablePowershellScriptPath = tempScriptPath;
+  return executablePowershellScriptPath;
+};
 var POWERSHELL_SCRIPT = `
 #Requires -Version 5.1
 Set-StrictMode -Version Latest
@@ -664,11 +692,12 @@ foreach ($u in $urls) {
 $result | ConvertTo-Json -Depth 6 -Compress
 `;
 var runFetchAppsScript = async () => {
-  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(POWERSHELL_SCRIPT).toString("base64")], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 });
-  const raw = stdout.trim();
-  if (!raw)
-    return [];
+  const scriptPath = getExecutablePowershellScriptPath();
   try {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 });
+    const raw = stdout.trim();
+    if (!raw)
+      return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
   } catch {
@@ -711,6 +740,9 @@ class WindowsAppRegistry {
         if (app.type === "uwp") {
           execFileAsync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `Start-Process "shell:AppsFolder\\${app.launch}"`], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 * 128 });
         } else {
+          if (!app.launch) {
+            return;
+          }
           spawn(app.launch, [], { detached: true, stdio: "ignore" });
         }
       },
